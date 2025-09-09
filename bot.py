@@ -344,7 +344,6 @@ def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached_n: in
 @bot.event
 async def on_ready():
     init_db()
-    # Sync per guild for fast availability
     for g in bot.guilds:
         with contextlib.suppress(Exception):
             await bot.tree.sync(guild=g)
