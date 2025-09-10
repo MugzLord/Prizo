@@ -28,10 +28,18 @@ bot = commands.Bot(command_prefix="!", intents=INTENTS)
 DB_PATH = os.getenv("DB_PATH", "counting_fun.db")  # you can mount a volume and point this to /data/counting_fun.db
 
 def db():
-    conn = sqlite3.connect(DB_PATH)
+    # Ensure directory exists (handles /data/... or any custom path)
+    path = os.getenv("DB_PATH", "counting_fun.db")
+    abs_path = os.path.abspath(path)
+    dir_path = os.path.dirname(abs_path)
+    if dir_path:  # empty when using a bare filename
+        os.makedirs(dir_path, exist_ok=True)
+
+    conn = sqlite3.connect(abs_path)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.row_factory = sqlite3.Row
     return conn
+
 
 def init_db():
     with db() as conn:
@@ -327,6 +335,8 @@ async def on_ready():
     except Exception as e:
         print("Global sync error:", e)
     print(f"Logged in as {bot.user} ({bot.user.id})")
+    print("DB_PATH:", os.getenv("DB_PATH", "counting_fun.db"))
+
 
 @bot.event
 async def on_guild_join(guild: discord.Guild):
