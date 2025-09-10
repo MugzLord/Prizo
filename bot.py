@@ -39,6 +39,20 @@ def db():
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.row_factory = sqlite3.Row
     return conn
+    
+async def safe_react(msg: discord.Message, emoji: str):
+    try:
+        me = msg.guild.me if msg.guild else None
+        perms = msg.channel.permissions_for(me) if me else None
+        if perms and perms.add_reactions:
+            await msg.add_reaction(emoji)
+        else:
+            # fallback if no reaction permission
+            await msg.reply(emoji, mention_author=False)
+    except Exception:
+        # last-resort fallback
+        with contextlib.suppress(Exception):
+            await msg.reply(emoji, mention_author=False)
 
 
 def init_db():
