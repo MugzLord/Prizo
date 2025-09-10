@@ -328,23 +328,20 @@ def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached_n: in
         winner_banter = pick_banter("winner") or "Legend behaviour. Take a bow. 👑"
 
     # pull ticket url (outside the DB ctx to avoid holding connection)
-    ticket_url = get_ticket_url(gid)
-    claim_text = (
-        "To claim: use the button below to open a ticket within 48 hours. 🎫"
-        if ticket_url else
-        "⚠️ Ticket link not set. Ask an admin to run `/set_ticket`."
-    )
-
+    winner_banter = pick_banter("winner") or "Legend behaviour. Take a bow. 👑"
+    claim_text = pick_banter("claim") or "To claim your prize: **DM @mikey.moon on Discord** within 48 hours. 💬"
+    
     embed = discord.Embed(
         title="🎲 Random Giveaway!",
         description=(
             f"Hidden jackpot at **{reached_n}**!\n"
             f"Winner: <@{winner_id}> — {prize} 🥳\n\n"
-            f"**{winner_banter}**\n\n"
+            f"**{winner_banter}**\n"
             f"{claim_text}"
         ),
         colour=discord.Colour.gold()
     )
+
     embed.set_footer(text="New jackpot is secretly armed again… keep counting.")
 
     # add button if we have a URL
@@ -656,11 +653,15 @@ class FunCounting(commands.Cog):
         claim_line = (f"To claim: **open a ticket on the server** → {ticket_url}"
                       if ticket_url else "⚠️ Ticket link not set. Ask an admin to run `/set_ticket`.")
 
+        claim_text = pick_banter("claim") or "To claim your prize: **DM @mikey.moon on Discord** within 48 hours. 💬"
+
         em = discord.Embed(
             title="⚡ Instant Giveaway",
-            description=f"Winner: <@{winner}> — {st['giveaway_prize']} 🎉\n{claim_line}",
+            description=f"Winner: <@{winner}> — {st['giveaway_prize']} 🎉\n{claim_text}",
             colour=discord.Colour.purple()
         )
+
+
         await interaction.response.send_message(embed=em, ephemeral=False)
 
     # Banter JSON management
