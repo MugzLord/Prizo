@@ -1,5 +1,5 @@
 {
-  "wrong": [
+ "wrong": [
     "Not quite, mate. Have another bash. 🍵",
     "Close but no cigar. Numbers only, champ. 🧮",
     "Oof—maths says ‘nah’. Try the next one. 📏",
@@ -7,20 +7,38 @@
     "Blame lag? I would. Still wrong though. 😅",
     "Good enthusiasm, questionable arithmetic. One more go! 💪",
     "That’s a spicy miscount. Hydrate and retry. 🥵",
-    "Maths panic detected. Deep breath, then **{n}**. 🧘"
-  ],
+    "Maths panic detected. Deep breath, then **{n}**. 🧘",
+    "Still loading… oh wait, you miscounted. ⏳",
+    "That’s not WOC, that’s WOOPS. 👀",
+    "Discover won’t feature that number, babes. 📉",
+    "You just gifted us the wrong digit. 🎁❌"
+
+ ],
   "winner": [
     "Legend behaviour. Take a bow. 👑",
     "Absolute unit of luck. 🍀",
     "That’s some premium fingertip magic. ✨",
     "Counting gods are well chuffed with you. 🙌",
     "Booked and busy, now also lucky. 📈",
-    "Serve, slay, and snag the day. 💅"
+    "Serve, slay, and snag the day. 💅",
+    "That clapback would trend on Discover. 🔥",
+    "Certified WOC moment right here. 🏅",
+    "Gifting bait? Nah, you gifted us victory. 🎁",
+    "Top Edit Tuesday level win. 🎨",
+    "This one deserves a badge, swear down. 🛡️"
+
   ],
   "milestone": [
     "We’ve only gone and smashed it! 🚀",
     "Historic number unlocked. 📜",
     "Big vibes at this milestone, keep it rolling! 🎉",
-    "The counting gods are smiling upon us. 😇"
+    "The counting gods are smiling upon us. 😇",
+    "IMVU front-page energy right here. 📸",
+    "Next stop: WOC feature. 🕺",
+    "Pageant crown moment unlocked. 👑",
+    "Looks like a Discover algorithm boost. 📊",
+    "Better than a new bundle drop. 🛍️",
+    "Cheers to this number, it’s party-room certified. 🍾"
   ]
+
 }
