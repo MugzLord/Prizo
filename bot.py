@@ -6,7 +6,7 @@ import math
 import random
 import sqlite3
 import contextlib
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import discord
 from discord import app_commands
@@ -32,29 +32,28 @@ def db():
     path = os.getenv("DB_PATH", "counting_fun.db")
     abs_path = os.path.abspath(path)
     dir_path = os.path.dirname(abs_path)
-    if dir_path:  # empty when using a bare filename
+    if dir_path:
         os.makedirs(dir_path, exist_ok=True)
 
     conn = sqlite3.connect(abs_path)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.row_factory = sqlite3.Row
     return conn
-    
+
+# ========= Safe reaction helper =========
 async def safe_react(msg: discord.Message, emoji: str):
     try:
         me = msg.guild.me if msg.guild else None
         perms = msg.channel.permissions_for(me) if me else None
-        if perms and perms.add_reactions:
+        if perms and perms.add_reactions and perms.read_message_history:
             await msg.add_reaction(emoji)
         else:
-            # fallback if no reaction permission
             await msg.reply(emoji, mention_author=False)
     except Exception:
-        # last-resort fallback
         with contextlib.suppress(Exception):
             await msg.reply(emoji, mention_author=False)
 
-
+# ========= DB =========
 def init_db():
     with db() as conn:
         conn.execute("""
@@ -73,7 +72,8 @@ def init_db():
             giveaway_range_min INTEGER NOT NULL DEFAULT 10,
             giveaway_range_max INTEGER NOT NULL DEFAULT 120,
             last_giveaway_n INTEGER NOT NULL DEFAULT 0,
-            giveaway_prize TEXT NOT NULL DEFAULT '💎 500 VU Credits'
+            giveaway_prize TEXT NOT NULL DEFAULT '💎 500 VU Credits',
+            ticket_url TEXT
         );
         """)
         conn.execute("""
@@ -97,11 +97,9 @@ def init_db():
             PRIMARY KEY (guild_id, n)
         );
         """)
-
-        # --- lightweight evolve: make sure ticket_url exists ---
+        # evolve for older DBs
         with contextlib.suppress(Exception):
             conn.execute("ALTER TABLE guild_state ADD COLUMN ticket_url TEXT")
-
 
 def get_state(gid: int):
     with db() as conn:
@@ -148,6 +146,11 @@ def set_theme(gid: int, theme: str):
     if theme not in THEMES: theme = DEFAULT_THEME
     with db() as conn:
         conn.execute("UPDATE guild_state SET theme=? WHERE guild_id=?", (theme, gid))
+
+def get_ticket_url(gid: int) -> str | None:
+    with db() as conn:
+        row = conn.execute("SELECT ticket_url FROM guild_state WHERE guild_id=?", (gid,)).fetchone()
+        return row["ticket_url"] if row else None
 
 def _touch_user(conn, gid: int, uid: int, correct=0, wrong=0, streak_best=None, add_badge=False):
     now = datetime.utcnow().isoformat()
@@ -227,23 +230,22 @@ DEFAULT_THEME = "party"
 MILESTONES = {10, 20, 25, 30, 40, 50, 69, 75, 80, 90, 100, 111, 123, 150, 200, 250,
               300, 333, 369, 400, 420, 500, 600, 666, 700, 750, 800, 900, 999, 1000}
 
-# banter from JSON
+# ========= Banter/Funfacts =========
 BANTER_PATH = os.getenv("BANTER_PATH", "banter.json")
 def load_banter():
     try:
         with open(BANTER_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
-            for k in ("wrong", "winner", "milestone"):
+            for k in ("wrong", "winner", "milestone", "roast"):
                 data.setdefault(k, [])
             return data
     except Exception:
-        return {"wrong": [], "winner": [], "milestone": []}
+        return {"wrong": [], "winner": [], "milestone": [], "roast": []}
 BANTER = load_banter()
 def pick_banter(cat: str) -> str:
     lines = BANTER.get(cat, [])
     return random.choice(lines) if lines else ""
 
-# utilities
 INT_STRICT = re.compile(r"^\s*(-?\d+)\s*$")   # numbers-only
 INT_LOOSE  = re.compile(r"^\s*(-?\d+)\b")     # number at start allowed
 def extract_int(text: str, strict: bool):
@@ -266,10 +268,8 @@ def is_palindrome(n: int) -> bool:
     s = str(abs(n)); return len(s) > 1 and s == s[::-1]
 def funny_number(n: int) -> bool:
     return n in {42, 69, 73, 96, 101, 111, 222, 333, 369, 404, 420, 666, 777, 999}
-import random
 
 FUNFACTS_PATH = os.getenv("FUNFACTS_PATH", "funfacts.json")
-
 def load_funfacts():
     try:
         with open(FUNFACTS_PATH, "r", encoding="utf-8") as f:
@@ -285,11 +285,9 @@ def pick_fact(category: str, n: int) -> str | None:
     return None
 
 def maths_fact(n: int) -> str | None:
-    # Special funny numbers
     funny_dict = FUNFACTS.get("funny", {})
     if str(n) in funny_dict:
         return random.choice(funny_dict[str(n)]).replace("{n}", str(n))
-
     if is_palindrome(n):
         return pick_fact("palindrome", n)
     if is_prime(n):
@@ -299,7 +297,6 @@ def maths_fact(n: int) -> str | None:
     if n % 10 == 0:
         return pick_fact("multiple10", n)
     return None
-
 
 def theme_emoji(state, kind="bump"):
     theme = THEMES.get(state["theme"] or DEFAULT_THEME, THEMES[DEFAULT_THEME])
@@ -351,13 +348,17 @@ def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached_n: in
         prize = st["giveaway_prize"] or "🎁 Surprise Gift"
         winner_banter = pick_banter("winner") or "Legend behaviour. Take a bow. 👑"
 
+        ticket_url = get_ticket_url(gid)
+        claim_line = (f"To claim your prize: **open a ticket on the server** → {ticket_url}"
+                      if ticket_url else "⚠️ Ticket link not set. Ask an admin to run `/set_ticket`.")
+
         embed = discord.Embed(
             title="🎲 Random Giveaway!",
             description=(
                 f"Hidden jackpot at **{reached_n}**!\n"
                 f"Winner: <@{winner_id}> — {prize} 🥳\n\n"
                 f"**{winner_banter}**\n"
-                f"To claim your prize: **DM @mikey.moon on Discord** within 48 hours. 💬"
+                f"{claim_line}"
             ),
             colour=discord.Colour.gold()
         )
@@ -374,7 +375,11 @@ def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached_n: in
 @bot.event
 async def on_ready():
     init_db()
-    # Global sync so commands work in EVERY server (and also sync per-guild on join below)
+    # init runtime trackers
+    bot.locked_players = {}
+    bot.last_poster_id = None
+    bot.last_poster_count = 0
+    # Global sync so commands work in EVERY server
     try:
         synced = await bot.tree.sync()
         print(f"Globally synced {len(synced)} commands ✅")
@@ -383,15 +388,12 @@ async def on_ready():
     print(f"Logged in as {bot.user} ({bot.user.id})")
     print("DB_PATH:", os.getenv("DB_PATH", "counting_fun.db"))
 
-
 @bot.event
 async def on_guild_join(guild: discord.Guild):
-    # fast per-guild sync when the bot is added to a new server
     with contextlib.suppress(Exception):
         await bot.tree.sync(guild=guild)
         print(f"Per-guild synced commands to {guild.id}")
 
-@bot.event
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
@@ -418,7 +420,7 @@ async def on_message(message: discord.Message):
         else:
             del bot.locked_players[message.author.id]
 
-    # --- consecutive 3-in-a-row ---
+    # --- consecutive 3-in-a-row tracking (by author) ---
     if bot.last_poster_id == message.author.id:
         bot.last_poster_count += 1
     else:
@@ -427,9 +429,11 @@ async def on_message(message: discord.Message):
     if bot.last_poster_count >= 3:
         bot.locked_players[message.author.id] = now + timedelta(minutes=10)
         roast = pick_banter("roast") or "Greedy digits get locked, enjoy the bench. 🏀"
-        await message.reply(
-            f"⛔ {message.author.mention} tried **3 in a row**. Locked for 10 minutes. {roast}"
-        )
+        with contextlib.suppress(Exception):
+            await safe_react(message, theme_emoji(st, "block"))
+            await message.reply(
+                f"⛔ {message.author.mention} tried **3 in a row**. Locked for **10 minutes**. {roast}"
+            )
         bot.last_poster_id = None
         bot.last_poster_count = 0
         return
@@ -437,22 +441,26 @@ async def on_message(message: discord.Message):
     # --- rule: no double posts ---
     if last_user == message.author.id:
         mark_wrong(message.guild.id, message.author.id)
-        await message.reply(
-            f"Not two in a row, {message.author.mention}. Next is **{expected}** for someone else."
-        )
+        await safe_react(message, theme_emoji(st, "block"))
+        banter = pick_banter("wrong") or "Not two in a row. Behave. 😅"
+        with contextlib.suppress(Exception):
+            await message.reply(
+                f"Not two in a row, {message.author.mention}. {banter} Next is **{expected}** for someone else."
+            )
         return
 
     # --- rule: must be exact next number ---
     if posted != expected:
         mark_wrong(message.guild.id, message.author.id)
-        await message.reply(f"Oof—maths says nah. 📏 Next up is **{expected}**.")
+        await safe_react(message, theme_emoji(st, "oops"))
+        banter = pick_banter("wrong") or "Oof—maths says ‘nah’. 📏"
+        with contextlib.suppress(Exception):
+            await message.reply(f"{banter} Next up is **{expected}**.")
         return
 
     # --- success! ---
     bump_ok(message.guild.id, message.author.id)
-    await message.add_reaction(theme_emoji(st, "ok"))
-    log_correct_count(message.guild.id, expected, message.author.id)
-    # milestones, fun facts, giveaways...
+    await safe_react(message, theme_emoji(st, "ok"))
 
     # log for giveaway eligibility
     with contextlib.suppress(Exception):
@@ -489,7 +497,6 @@ async def on_message(message: discord.Message):
     # hidden giveaway
     ensure_giveaway_target(message.guild.id)
     try_giveaway_draw(bot, message, expected)
-
 
 # ========= Slash Commands =========
 class FunCounting(commands.Cog):
@@ -639,6 +646,15 @@ class FunCounting(commands.Cog):
             ephemeral=True
         )
 
+    @app_commands.command(name="set_ticket", description="Set the server ticket link for prize claims.")
+    @app_commands.guild_only()
+    async def set_ticket(self, interaction: discord.Interaction, url: str):
+        if not is_admin(interaction):
+            return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
+        with db() as conn:
+            conn.execute("UPDATE guild_state SET ticket_url=? WHERE guild_id=?", (url, interaction.guild_id))
+        await interaction.response.send_message(f"🎫 Ticket link set. Claims will point to: {url}", ephemeral=True)
+
     @app_commands.command(name="giveaway_status", description="Peek giveaway info (admins only, secret).")
     @app_commands.guild_only()
     async def giveaway_status(self, interaction: discord.Interaction):
@@ -646,15 +662,17 @@ class FunCounting(commands.Cog):
             return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
         with db() as conn:
             st = conn.execute("""
-            SELECT current_number, giveaway_target, giveaway_range_min, giveaway_range_max, last_giveaway_n, giveaway_prize
+            SELECT current_number, giveaway_target, giveaway_range_min, giveaway_range_max, last_giveaway_n, giveaway_prize, ticket_url
             FROM guild_state WHERE guild_id=?
             """,(interaction.guild_id,)).fetchone()
         left = (st["giveaway_target"] - st["current_number"]) if st["giveaway_target"] else None
+        turl = st["ticket_url"] or "— not set —"
         await interaction.response.send_message(
             f"🔐 Armed.\n"
             f"- Range: **{st['giveaway_range_min']}–{st['giveaway_range_max']}**\n"
             f"- Since last jackpot: **{st['last_giveaway_n']}**\n"
             f"- Prize: **{st['giveaway_prize']}**\n"
+            f"- Ticket link: {turl}\n"
             f"- ≈Next in **{left}** steps", ephemeral=True
         )
 
@@ -677,10 +695,14 @@ class FunCounting(commands.Cog):
         if not pool:
             return await interaction.response.send_message("No recent participants to draw from.", ephemeral=True)
         winner = random.choice(pool)
+
+        ticket_url = get_ticket_url(gid)
+        claim_line = (f"To claim: **open a ticket on the server** → {ticket_url}"
+                      if ticket_url else "⚠️ Ticket link not set. Ask an admin to run `/set_ticket`.")
+
         em = discord.Embed(
             title="⚡ Instant Giveaway",
-            description=f"Winner: <@{winner}> — {st['giveaway_prize']} 🎉\n"
-                        f"To claim: **DM @mikey.moon on Discord** within 48 hours.",
+            description=f"Winner: <@{winner}> — {st['giveaway_prize']} 🎉\n{claim_line}",
             colour=discord.Colour.purple()
         )
         await interaction.response.send_message(embed=em, ephemeral=False)
