@@ -404,7 +404,12 @@ async def on_message(message: discord.Message):
 
     posted = extract_int(message.content, strict=bool(st["numbers_only"]))
     if posted is None:
+        # Warn with funny banter instead of ignoring
+        banter = (pick_banter("nonnumeric") or "Numbers only in here, mate.").replace("{user}", message.author.mention)
+        with contextlib.suppress(Exception):
+            await message.reply(banter)
         return
+
 
     expected = st["current_number"] + 1
     last_user = st["last_user_id"]
@@ -438,15 +443,18 @@ async def on_message(message: discord.Message):
         return
 
     # --- rule: no double posts ---
+    # --- rule: no double posts ---
     if last_user == message.author.id:
         mark_wrong(message.guild.id, message.author.id)
         await safe_react(message, "⛔")
-        banter = pick_banter("wrong") or "Not two in a row. Behave. 😅"
+        # Replace {n} with expected before sending
+        banter = (pick_banter("wrong") or "Not two in a row. Behave. 😅").replace("{n}", str(expected))
         with contextlib.suppress(Exception):
             await message.reply(
                 f"Not two in a row, {message.author.mention}. {banter} Next is **{expected}** for someone else."
             )
         return
+
 
     # --- rule: must be exact next number ---
     if posted != expected:
