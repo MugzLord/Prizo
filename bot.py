@@ -84,6 +84,11 @@ def init_db():
         );
         """)
 
+        # --- lightweight evolve: make sure ticket_url exists ---
+        with contextlib.suppress(Exception):
+            conn.execute("ALTER TABLE guild_state ADD COLUMN ticket_url TEXT")
+
+
 def get_state(gid: int):
     with db() as conn:
         row = conn.execute("SELECT * FROM guild_state WHERE guild_id=?", (gid,)).fetchone()
@@ -386,8 +391,46 @@ async def on_message(message: discord.Message):
     if posted is None:
         return
 
-    expected = st["current_number"] + 1
-    last_user = st["last_user_id"]
+        expected = st["current_number"] + 1
+        last_user = st["last_user_id"]
+    
+        # --- in-memory trackers for per-process runtime ---
+        if not hasattr(bot, "row_counts"):
+            bot.row_counts = {}          # user_id -> how many in a row they’ve tried
+        if not hasattr(bot, "locked_players"):
+            bot.locked_players = {}      # user_id -> unlock datetime (UTC)
+    
+        now = datetime.utcnow()
+    
+        # If locked, silently ignore/delete their messages in the counting channel
+        if message.author.id in bot.locked_players:
+            if now < bot.locked_players[message.author.id]:
+                with contextlib.suppress(Exception):
+                    await message.delete()
+                return
+            else:
+                del bot.locked_players[message.author.id]
+    
+        # Count consecutive attempts by this user (based on last_user_id)
+        row_count = bot.row_counts.get(message.author.id, 0)
+        if last_user == message.author.id:
+            row_count += 1
+        else:
+            row_count = 1
+        bot.row_counts[message.author.id] = row_count
+    
+        # If they try to be the last poster 3 times in a row -> 30 min lock
+        if row_count >= 3:
+            bot.locked_players[message.author.id] = now + timedelta(minutes=30)
+            roast = pick_banter("roast") or "Greedy digits get locked, enjoy the bench. 🏀"
+            with contextlib.suppress(Exception):
+                await message.add_reaction(theme_emoji(st, "block"))
+                await message.reply(
+                    f"⛔ {message.author.mention} tried to count **3 times in a row**.\n"
+                    f"Slot locked for **30 minutes**. {roast}"
+                )
+            return
+
     
     # Track streaks per user in memory
     if not hasattr(bot, "row_counts"):
