@@ -248,13 +248,38 @@ def is_palindrome(n: int) -> bool:
 def funny_number(n: int) -> bool:
     return n in {42, 69, 73, 96, 101, 111, 222, 333, 369, 404, 420, 666, 777, 999}
 def maths_fact(n: int) -> str | None:
-    bits = []
-    if is_prime(n): bits.append("prime")
-    if is_palindrome(n): bits.append("palindrome")
-    if n % 10 == 0: bits.append("multiple of 10")
-    if n % 100 == 0: bits.append("century number")
-    if funny_number(n): bits.append("funny")
-    return f"Fun fact: **{n}** is {', '.join(bits)}." if bits else None
+    # Custom IMVU-style fun facts—only one per number (priority order)
+    # Priority: special funny numbers → palindrome → prime → multiples of 100 → multiples of 10 → nothing
+
+    # Special “funny” numbers with custom lines
+    funny_custom = {
+        69: "a spicy content alert — probably hidden by Discover mods. 🌶️",
+        420: "a smoke-room lobby count — hazy vibes incoming. 🚬",
+        777: "casino credits energy — jackpot vibes. 🎰",
+        999: "badge collector max mode — go collect 'em all! 🏅",
+    }
+    if n in funny_custom:
+        return f"Fun fact: **{n}** is {funny_custom[n]}"
+
+    # Palindromes
+    if is_palindrome(n):
+        return f"Fun fact: **{n}** is a mirror-selfie number — posting the same pic twice hoping for double likes. 📸"
+
+    # Primes
+    if is_prime(n):
+        return f"Fun fact: **{n}** is rarer than a host online at 3 AM — iconic, questionable, unforgettable. 🌙"
+
+    # Multiples of 100
+    if n % 100 == 0:
+        return f"Fun fact: **{n}** is pageant-crowd size — everyone’s clapping, half muted, full drama. 👑"
+
+    # Multiples of 10
+    if n % 10 == 0:
+        return f"Fun fact: **{n}** is a bundle-drop number — clean, overpriced, and still selling out. 🛍️"
+
+    # If nothing special, no fact
+    return None
+
 def theme_emoji(state, kind="bump"):
     theme = THEMES.get(state["theme"] or DEFAULT_THEME, THEMES[DEFAULT_THEME])
     return theme.get(kind, "🎉")
@@ -547,11 +572,11 @@ class FunCounting(commands.Cog):
     @app_commands.command(name="giveaway_config", description="Set random giveaway range and prize label.")
     @app_commands.describe(range_min="Min steps until a hidden giveaway (default 10)",
                            range_max="Max steps (default 120)",
-                           prize="Prize label, e.g. '💎 500 VU Credits'")
+                           prize="Prize label, e.g. '💎 1000 VU Credits'")
     @app_commands.guild_only()
     async def giveaway_config(self, interaction: discord.Interaction,
                               range_min: int = 10, range_max: int = 120,
-                              prize: str = "💎 500 VU Credits"):
+                              prize: str = "💎 1000 VU Credits"):
         if not is_admin(interaction):
             return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
         if range_min < 5: range_min = 5
