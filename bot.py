@@ -392,94 +392,67 @@ async def on_guild_join(guild: discord.Guild):
         print(f"Per-guild synced commands to {guild.id}")
 
 @bot.event
+@bot.event
 async def on_message(message: discord.Message):
-    # ignore bots/DMs
     if message.author.bot or not message.guild:
         return
 
     st = get_state(message.guild.id)
-
-    # only act in the configured counting channel
     if not st["channel_id"] or message.channel.id != st["channel_id"]:
         return
 
-    # check if we’re enforcing numbers-only vs loose
-    strict = bool(st["numbers_only"])
-    posted = extract_int(message.content, strict=strict)
+    posted = extract_int(message.content, strict=bool(st["numbers_only"]))
     if posted is None:
         return
 
-        expected = st["current_number"] + 1
-        last_user = st["last_user_id"]
-    
-        # ---- in-memory trackers (per process) ----
-        if not hasattr(bot, "locked_players"):
-            bot.locked_players = {}        # user_id -> unlock datetime (UTC)
-        if not hasattr(bot, "last_poster_id"):
-            bot.last_poster_id = None      # last user who attempted a number
-        if not hasattr(bot, "last_poster_count"):
-            bot.last_poster_count = 0      # how many consecutive attempts by that user
-    
-        now = datetime.utcnow()
-    
-        # If user is locked, delete & ignore
-        if message.author.id in bot.locked_players:
-            if now < bot.locked_players[message.author.id]:
-                with contextlib.suppress(Exception):
-                    await message.delete()
-                return
-            else:
-                del bot.locked_players[message.author.id]
-    
-        # ---- count consecutive attempts by the SAME author in the channel ----
-        if bot.last_poster_id == message.author.id:
-            bot.last_poster_count += 1
-        else:
-            bot.last_poster_id = message.author.id
-            bot.last_poster_count = 1
-    
-        # Lock on the 3rd consecutive attempt (3 in a row)
-        if bot.last_poster_count >= 3:
-            bot.locked_players[message.author.id] = now + timedelta(minutes=10)
-            roast = pick_banter("roast") or "Greedy digits get locked, enjoy the bench. 🏀"
+    expected = st["current_number"] + 1
+    last_user = st["last_user_id"]
+
+    # --- timeout check ---
+    now = datetime.utcnow()
+    if message.author.id in bot.locked_players:
+        if now < bot.locked_players[message.author.id]:
             with contextlib.suppress(Exception):
-                await message.add_reaction(theme_emoji(st, "block"))
-                await message.reply(
-                    f"⛔ {message.author.mention} tried to count **3 times in a row**.\n"
-                    f"Slot locked for **10 minutes**. {roast}"
-                )
-            # reset the streak so they don't insta-trigger again after unlock
-            bot.last_poster_id = None
-            bot.last_poster_count = 0
+                await message.delete()
             return
+        else:
+            del bot.locked_players[message.author.id]
 
+    # --- consecutive 3-in-a-row ---
+    if bot.last_poster_id == message.author.id:
+        bot.last_poster_count += 1
+    else:
+        bot.last_poster_id = message.author.id
+        bot.last_poster_count = 1
+    if bot.last_poster_count >= 3:
+        bot.locked_players[message.author.id] = now + timedelta(minutes=10)
+        roast = pick_banter("roast") or "Greedy digits get locked, enjoy the bench. 🏀"
+        await message.reply(
+            f"⛔ {message.author.mention} tried **3 in a row**. Locked for 10 minutes. {roast}"
+        )
+        bot.last_poster_id = None
+        bot.last_poster_count = 0
+        return
 
-
-    # --- original rule: no double-posts (same user twice) ---
+    # --- rule: no double posts ---
     if last_user == message.author.id:
         mark_wrong(message.guild.id, message.author.id)
-        with contextlib.suppress(Exception):
-            await message.add_reaction(theme_emoji(st, "block"))
-            banter = pick_banter("wrong") or "Not two in a row. Behave. 😅"
-            await message.reply(
-                f"Not two in a row, {message.author.mention}. {banter} "
-                f"Next is **{expected}** for someone else."
-            )
+        await message.reply(
+            f"Not two in a row, {message.author.mention}. Next is **{expected}** for someone else."
+        )
         return
 
-    # --- original rule: must be exact next number ---
+    # --- rule: must be exact next number ---
     if posted != expected:
         mark_wrong(message.guild.id, message.author.id)
-        with contextlib.suppress(Exception):
-            await message.add_reaction(theme_emoji(st, "oops"))
-            banter = pick_banter("wrong") or "Oof—maths says ‘nah’. 📏"
-            await message.reply(f"{banter} Next up is **{expected}**.")
+        await message.reply(f"Oof—maths says nah. 📏 Next up is **{expected}**.")
         return
 
-    # --- success path ---
+    # --- success! ---
     bump_ok(message.guild.id, message.author.id)
-    with contextlib.suppress(Exception):
-        await message.add_reaction(theme_emoji(st, "ok"))
+    await message.add_reaction(theme_emoji(st, "ok"))
+    log_correct_count(message.guild.id, expected, message.author.id)
+    # milestones, fun facts, giveaways...
 
     # log for giveaway eligibility
     with contextlib.suppress(Exception):
