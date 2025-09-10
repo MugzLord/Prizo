@@ -388,24 +388,51 @@ async def on_message(message: discord.Message):
 
     expected = st["current_number"] + 1
     last_user = st["last_user_id"]
-
-    # rule: no double-posts
+    
+    # Track streaks per user in memory
+    if not hasattr(bot, "row_counts"):
+        bot.row_counts = {}
+    if not hasattr(bot, "locked_players"):
+        bot.locked_players = {}
+    
+    now = datetime.utcnow()
+    
+    # Check if player is locked
+    if message.author.id in bot.locked_players:
+        if now < bot.locked_players[message.author.id]:
+            with contextlib.suppress(Exception):
+                await message.delete()
+            return
+        else:
+            del bot.locked_players[message.author.id]
+    
+    # Count consecutive posts by this user
+    row_count = bot.row_counts.get(message.author.id, 0)
     if last_user == message.author.id:
-        mark_wrong(message.guild.id, message.author.id)
-        with contextlib.suppress(Exception):
-            await message.add_reaction(theme_emoji(st, "block"))
-            banter = pick_banter("wrong") or "Not two in a row. Behave. 😅"
-            await message.reply(f"Not two in a row, {message.author.mention}. {banter} Next is **{expected}** for someone else.")
+        row_count += 1
+    else:
+        row_count = 1
+    bot.row_counts[message.author.id] = row_count
+    
+    # rule: 3-in-a-row penalty
+    if row_count >= 3:
+        bot.locked_players[message.author.id] = now + timedelta(minutes=30)
+        roast = random.choice(BANTER.get("roast", ["Greedy digits get locked, enjoy the bench. 🏀"]))
+        await message.channel.send(
+            f"⛔ {message.author.mention} tried counting 3 times in a row. "
+            f"Slot locked for 10 minutes. {roast}"
+        )
         return
 
-    # rule: must be exact next number
-    if posted != expected:
-        mark_wrong(message.guild.id, message.author.id)
-        with contextlib.suppress(Exception):
-            await message.add_reaction(theme_emoji(st, "oops"))
-            banter = pick_banter("wrong") or "Oof—maths says ‘nah’. 📏"
-            await message.reply(f"{banter} Next up is **{expected}**.")
-        return
+# rule: no double-posts (kept from your old code)
+if last_user == message.author.id:
+    mark_wrong(message.guild.id, message.author.id)
+    with contextlib.suppress(Exception):
+        await message.add_reaction(theme_emoji(st, "block"))
+        banter = pick_banter("wrong") or "Not two in a row. Behave. 😅"
+        await message.reply(f"Not two in a row, {message.author.mention}. {banter} Next is **{expected}** for someone else.")
+    return
+
 
     # success!
     bump_ok(message.guild.id, message.author.id)
