@@ -1,4 +1,4 @@
-# bot.py — Prizo (multi-server)
+# bot.py — Prizo (multi-server, no themes, single settings command)
 import os
 import re
 import json
@@ -18,23 +18,21 @@ if not TOKEN:
     raise RuntimeError("Set DISCORD_TOKEN")
 
 INTENTS = discord.Intents.default()
-INTENTS.message_content = True        # required for reading numbers
+INTENTS.message_content = True
 INTENTS.guilds = True
 INTENTS.members = True
 
 bot = commands.Bot(command_prefix="!", intents=INTENTS)
 
 # ========= Storage =========
-DB_PATH = os.getenv("DB_PATH", "counting_fun.db")  # you can mount a volume and point this to /data/counting_fun.db
+DB_PATH = os.getenv("DB_PATH", "counting_fun.db")
 
 def db():
     # Ensure directory exists (handles /data/... or any custom path)
-    path = os.getenv("DB_PATH", "counting_fun.db")
-    abs_path = os.path.abspath(path)
+    abs_path = os.path.abspath(DB_PATH)
     dir_path = os.path.dirname(abs_path)
     if dir_path:
         os.makedirs(dir_path, exist_ok=True)
-
     conn = sqlite3.connect(abs_path)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.row_factory = sqlite3.Row
@@ -63,7 +61,6 @@ def init_db():
             current_number INTEGER NOT NULL DEFAULT 0,
             start_number INTEGER NOT NULL DEFAULT 1,
             last_user_id INTEGER,
-            theme TEXT NOT NULL DEFAULT 'party',
             numbers_only INTEGER NOT NULL DEFAULT 0,
             facts_on INTEGER NOT NULL DEFAULT 1,
             guild_streak INTEGER NOT NULL DEFAULT 0,
@@ -97,7 +94,7 @@ def init_db():
             PRIMARY KEY (guild_id, n)
         );
         """)
-        # evolve for older DBs
+        # evolve for older DBs (safe if present)
         with contextlib.suppress(Exception):
             conn.execute("ALTER TABLE guild_state ADD COLUMN ticket_url TEXT")
 
@@ -131,8 +128,10 @@ def set_start(gid: int, start: int):
 def reset_count(gid: int):
     with db() as conn:
         row = get_state(gid)
-        conn.execute("UPDATE guild_state SET current_number=?, last_user_id=NULL, guild_streak=0 WHERE guild_id=?",
-                     (row["start_number"] - 1, gid))
+        conn.execute(
+            "UPDATE guild_state SET current_number=?, last_user_id=NULL, guild_streak=0 WHERE guild_id=?",
+            (row["start_number"] - 1, gid)
+        )
 
 def set_numbers_only(gid: int, flag: bool):
     with db() as conn:
@@ -141,11 +140,6 @@ def set_numbers_only(gid: int, flag: bool):
 def set_facts_on(gid: int, flag: bool):
     with db() as conn:
         conn.execute("UPDATE guild_state SET facts_on=? WHERE guild_id=?", (1 if flag else 0, gid))
-
-def set_theme(gid: int, theme: str):
-    if theme not in THEMES: theme = DEFAULT_THEME
-    with db() as conn:
-        conn.execute("UPDATE guild_state SET theme=? WHERE guild_id=?", (theme, gid))
 
 def get_ticket_url(gid: int) -> str | None:
     with db() as conn:
@@ -217,20 +211,7 @@ def log_correct_count(gid: int, n: int, uid: int):
         conn.execute("INSERT OR REPLACE INTO count_log (guild_id, n, user_id, ts) VALUES (?,?,?,?)",
                      (gid, n, uid, now_iso()))
 
-# ========= Game bits =========
-THEMES = {
-    "party": {"ok": "✅", "bump": "🎉", "oops": "❌", "block": "⛔", "banner": "🎊 Party Mode 🎊"},
-    "cats": {"ok": "✅", "bump": "😸", "oops": "🙀", "block": "😾", "banner": "🐾 Cat Parade 🐾"},
-    "skulls": {"ok": "✅", "bump": "💀", "oops": "☠️", "block": "🧨", "banner": "💀 Bone Rattlers 💀"},
-    "sports": {"ok": "✅", "bump": "🏆", "oops": "🚫", "block": "🟥", "banner": "🏟️ Stadium Roar 🏟️"},
-    "hearts": {"ok": "✅", "bump": "💖", "oops": "💔", "block": "💢", "banner": "💘 Love Train 💘"},
-}
-DEFAULT_THEME = "party"
-
-MILESTONES = {10, 20, 25, 30, 40, 50, 69, 75, 80, 90, 100, 111, 123, 150, 200, 250,
-              300, 333, 369, 400, 420, 500, 600, 666, 700, 750, 800, 900, 999, 1000}
-
-# ========= Banter/Funfacts =========
+# ========= Fun facts / banter =========
 BANTER_PATH = os.getenv("BANTER_PATH", "banter.json")
 def load_banter():
     try:
@@ -242,32 +223,10 @@ def load_banter():
     except Exception:
         return {"wrong": [], "winner": [], "milestone": [], "roast": []}
 BANTER = load_banter()
+
 def pick_banter(cat: str) -> str:
     lines = BANTER.get(cat, [])
     return random.choice(lines) if lines else ""
-
-INT_STRICT = re.compile(r"^\s*(-?\d+)\s*$")   # numbers-only
-INT_LOOSE  = re.compile(r"^\s*(-?\d+)\b")     # number at start allowed
-def extract_int(text: str, strict: bool):
-    m = (INT_STRICT if strict else INT_LOOSE).match(text)
-    return int(m.group(1)) if m else None
-
-def is_admin(ix: discord.Interaction) -> bool:
-    return ix.user.guild_permissions.manage_guild
-
-def is_prime(n: int) -> bool:
-    if n <= 1: return False
-    if n <= 3: return True
-    if n % 2 == 0 or n % 3 == 0: return False
-    r, f = int(math.sqrt(n)), 5
-    while f <= r:
-        if n % f == 0 or n % (f+2) == 0: return False
-        f += 6
-    return True
-def is_palindrome(n: int) -> bool:
-    s = str(abs(n)); return len(s) > 1 and s == s[::-1]
-def funny_number(n: int) -> bool:
-    return n in {42, 69, 73, 96, 101, 111, 222, 333, 369, 404, 420, 666, 777, 999}
 
 FUNFACTS_PATH = os.getenv("FUNFACTS_PATH", "funfacts.json")
 def load_funfacts():
@@ -284,10 +243,26 @@ def pick_fact(category: str, n: int) -> str | None:
         return random.choice(lines).replace("{n}", str(n))
     return None
 
+def is_prime(n: int) -> bool:
+    if n <= 1: return False
+    if n <= 3: return True
+    if n % 2 == 0 or n % 3 == 0: return False
+    r, f = int(math.sqrt(n)), 5
+    while f <= r:
+        if n % f == 0 or n % (f+2) == 0: return False
+        f += 6
+    return True
+
+def is_palindrome(n: int) -> bool:
+    s = str(abs(n)); return len(s) > 1 and s == s[::-1]
+
+def funny_number(n: int) -> bool:
+    return n in {42, 69, 73, 96, 101, 111, 222, 333, 369, 404, 420, 666, 777, 999}
+
 def maths_fact(n: int) -> str | None:
-    funny_dict = FUNFACTS.get("funny", {})
-    if str(n) in funny_dict:
-        return random.choice(funny_dict[str(n)]).replace("{n}", str(n))
+    special = FUNFACTS.get("funny", {})
+    if str(n) in special:
+        return random.choice(special[str(n)]).replace("{n}", str(n))
     if is_palindrome(n):
         return pick_fact("palindrome", n)
     if is_prime(n):
@@ -298,13 +273,15 @@ def maths_fact(n: int) -> str | None:
         return pick_fact("multiple10", n)
     return None
 
-def theme_emoji(state, kind="bump"):
-    theme = THEMES.get(state["theme"] or DEFAULT_THEME, THEMES[DEFAULT_THEME])
-    return theme.get(kind, "🎉")
+# ========= Milestones =========
+MILESTONES = {10, 20, 25, 30, 40, 50, 69, 75, 80, 90, 100, 111, 123, 150, 200, 250,
+              300, 333, 369, 400, 420, 500, 600, 666, 700, 750, 800, 900, 999, 1000}
 
-# ========= Hidden random giveaways =========
+# ========= Giveaways =========
 def _roll_next_target_after(conn, gid: int, current_n: int):
-    st = conn.execute("SELECT giveaway_range_min, giveaway_range_max FROM guild_state WHERE guild_id=?",(gid,)).fetchone()
+    st = conn.execute(
+        "SELECT giveaway_range_min, giveaway_range_max FROM guild_state WHERE guild_id=?",(gid,)
+    ).fetchone()
     rmin = max(5, int(st["giveaway_range_min"] or 10))
     rmax = max(rmin + 1, int(st["giveaway_range_max"] or 120))
     delta = random.randint(rmin, rmax)
@@ -314,7 +291,9 @@ def _roll_next_target_after(conn, gid: int, current_n: int):
 
 def ensure_giveaway_target(gid: int):
     with db() as conn:
-        row = conn.execute("SELECT current_number, giveaway_target FROM guild_state WHERE guild_id=?", (gid,)).fetchone()
+        row = conn.execute(
+            "SELECT current_number, giveaway_target FROM guild_state WHERE guild_id=?", (gid,)
+        ).fetchone()
         if row["giveaway_target"] is None or row["giveaway_target"] <= row["current_number"]:
             return _roll_next_target_after(conn, gid, row["current_number"])
         return row["giveaway_target"]
@@ -375,18 +354,18 @@ def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached_n: in
 @bot.event
 async def on_ready():
     init_db()
-    # init runtime trackers
+    # runtime trackers (for 3-in-a-row)
     bot.locked_players = {}
     bot.last_poster_id = None
     bot.last_poster_count = 0
-    # Global sync so commands work in EVERY server
+
     try:
         synced = await bot.tree.sync()
         print(f"Globally synced {len(synced)} commands ✅")
     except Exception as e:
         print("Global sync error:", e)
     print(f"Logged in as {bot.user} ({bot.user.id})")
-    print("DB_PATH:", os.getenv("DB_PATH", "counting_fun.db"))
+    print("DB_PATH:", DB_PATH)
 
 @bot.event
 async def on_guild_join(guild: discord.Guild):
@@ -402,6 +381,13 @@ async def on_message(message: discord.Message):
     st = get_state(message.guild.id)
     if not st["channel_id"] or message.channel.id != st["channel_id"]:
         return
+
+    # numbers-only extract (or loose: number must be at start)
+    INT_STRICT = re.compile(r"^\s*(-?\d+)\s*$")
+    INT_LOOSE  = re.compile(r"^\s*(-?\d+)\b")
+    def extract_int(text: str, strict: bool):
+        m = (INT_STRICT if strict else INT_LOOSE).match(text)
+        return int(m.group(1)) if m else None
 
     posted = extract_int(message.content, strict=bool(st["numbers_only"]))
     if posted is None:
@@ -430,7 +416,7 @@ async def on_message(message: discord.Message):
         bot.locked_players[message.author.id] = now + timedelta(minutes=10)
         roast = pick_banter("roast") or "Greedy digits get locked, enjoy the bench. 🏀"
         with contextlib.suppress(Exception):
-            await safe_react(message, theme_emoji(st, "block"))
+            await safe_react(message, "⛔")
             await message.reply(
                 f"⛔ {message.author.mention} tried **3 in a row**. Locked for **10 minutes**. {roast}"
             )
@@ -441,7 +427,7 @@ async def on_message(message: discord.Message):
     # --- rule: no double posts ---
     if last_user == message.author.id:
         mark_wrong(message.guild.id, message.author.id)
-        await safe_react(message, theme_emoji(st, "block"))
+        await safe_react(message, "⛔")
         banter = pick_banter("wrong") or "Not two in a row. Behave. 😅"
         with contextlib.suppress(Exception):
             await message.reply(
@@ -452,7 +438,7 @@ async def on_message(message: discord.Message):
     # --- rule: must be exact next number ---
     if posted != expected:
         mark_wrong(message.guild.id, message.author.id)
-        await safe_react(message, theme_emoji(st, "oops"))
+        await safe_react(message, "❌")
         banter = pick_banter("wrong") or "Oof—maths says ‘nah’. 📏"
         with contextlib.suppress(Exception):
             await message.reply(f"{banter} Next up is **{expected}**.")
@@ -460,7 +446,7 @@ async def on_message(message: discord.Message):
 
     # --- success! ---
     bump_ok(message.guild.id, message.author.id)
-    await safe_react(message, theme_emoji(st, "ok"))
+    await safe_react(message, "✅")
 
     # log for giveaway eligibility
     with contextlib.suppress(Exception):
@@ -468,10 +454,8 @@ async def on_message(message: discord.Message):
 
     # milestones
     if expected in MILESTONES:
-        theme = THEMES.get(st["theme"], THEMES[DEFAULT_THEME])
-        banner = theme["banner"]
         em = discord.Embed(
-            title=banner,
+            title="🎉 Party Mode 🎉",
             description=f"**{expected}** smashed by {message.author.mention}!",
             colour=discord.Colour.gold()
         )
@@ -503,79 +487,35 @@ class FunCounting(commands.Cog):
     def __init__(self, b: commands.Bot):
         self.bot = b
 
-    # Setup
-    @app_commands.command(name="setup_counting", description="Set the counting channel and starting number.")
+    # Single settings command
+    @app_commands.command(name="settings_counting", description="Set the counting channel and starting number.")
     @app_commands.describe(channel="Channel to count in", start="Start number (default 1)")
     @app_commands.guild_only()
-    async def setup(self, interaction: discord.Interaction, channel: discord.TextChannel, start: int = 1):
-        if not is_admin(interaction):
+    async def settings_counting(self, interaction: discord.Interaction, channel: discord.TextChannel, start: int = 1):
+        if not interaction.user.guild_permissions.manage_guild:
             return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
         set_channel(interaction.guild_id, channel.id)
         set_start(interaction.guild_id, start)
         st = get_state(interaction.guild_id)
         await interaction.response.send_message(
-            f"{theme_emoji(st,'bump')} Counting set in {channel.mention} from **{start}**. "
-            f"Numbers-only: **{'ON' if st['numbers_only'] else 'OFF'}**, Theme: **{st['theme']}**.",
+            f"🎯 Counting set in {channel.mention} from **{start}**. "
+            f"Numbers-only: **{'ON' if st['numbers_only'] else 'OFF'}**, Fun facts: **{'ON' if st['facts_on'] else 'OFF'}**.",
             ephemeral=True
         )
 
-    # Channel / start / reset
-    @app_commands.command(name="set_channel", description="Change the counting channel.")
-    @app_commands.guild_only()
-    async def setch(self, interaction: discord.Interaction, channel: discord.TextChannel):
-        if not is_admin(interaction):
-            return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
-        set_channel(interaction.guild_id, channel.id)
-        st = get_state(interaction.guild_id)
-        await interaction.response.send_message(
-            f"✅ Counting channel set to {channel.mention}. Next: **{st['current_number']+1}**.",
-            ephemeral=True
-        )
-
-    @app_commands.command(name="set_start", description="Set/Change the starting number (resets progress).")
-    @app_commands.guild_only()
-    async def setstart(self, interaction: discord.Interaction, number: int):
-        if not is_admin(interaction):
-            return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
-        set_start(interaction.guild_id, number)
-        await interaction.response.send_message(
-            f"🔄 Start number set to **{number}**. Next expected: **{number}**.", ephemeral=True
-        )
-
-    @app_commands.command(name="reset_count", description="Reset to the configured start number.")
-    @app_commands.guild_only()
-    async def resetc(self, interaction: discord.Interaction):
-        if not is_admin(interaction):
-            return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
-        reset_count(interaction.guild_id)
-        st = get_state(interaction.guild_id)
-        await interaction.response.send_message(
-            f"🔁 Counter reset. Next expected: **{st['current_number']+1}**.", ephemeral=True
-        )
-
-    # Fun toggles
-    @app_commands.command(name="theme", description="Set the bot’s reaction theme.")
-    @app_commands.choices(name=[app_commands.Choice(name=t, value=t) for t in THEMES.keys()])
-    @app_commands.guild_only()
-    async def theme(self, interaction: discord.Interaction, name: app_commands.Choice[str]):
-        if not is_admin(interaction):
-            return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
-        set_theme(interaction.guild_id, name.value)
-        st = get_state(interaction.guild_id)
-        await interaction.response.send_message(f"Theme set to **{st['theme']}** {theme_emoji(st,'bump')}", ephemeral=True)
-
+    # Optional toggles
     @app_commands.command(name="numbers_only", description="Toggle numbers-only mode.")
     @app_commands.guild_only()
-    async def numbers_only(self, interaction: discord.Interaction, on: bool):
-        if not is_admin(interaction):
+    async def numbers_only_cmd(self, interaction: discord.Interaction, on: bool):
+        if not interaction.user.guild_permissions.manage_guild:
             return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
         set_numbers_only(interaction.guild_id, on)
         await interaction.response.send_message(f"Numbers-only mode: **{'ON' if on else 'OFF'}**", ephemeral=True)
 
     @app_commands.command(name="fun_facts", description="Toggle maths fun facts.")
     @app_commands.guild_only()
-    async def fun_facts(self, interaction: discord.Interaction, on: bool):
-        if not is_admin(interaction):
+    async def fun_facts_cmd(self, interaction: discord.Interaction, on: bool):
+        if not interaction.user.guild_permissions.manage_guild:
             return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
         set_facts_on(interaction.guild_id, on)
         await interaction.response.send_message(f"Fun facts: **{'ON' if on else 'OFF'}**", ephemeral=True)
@@ -629,7 +569,7 @@ class FunCounting(commands.Cog):
     async def giveaway_config(self, interaction: discord.Interaction,
                               range_min: int = 10, range_max: int = 120,
                               prize: str = "💎 1000 VU Credits"):
-        if not is_admin(interaction):
+        if not interaction.user.guild_permissions.manage_guild:
             return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
         if range_min < 5: range_min = 5
         if range_max <= range_min: range_max = range_min + 1
@@ -649,16 +589,16 @@ class FunCounting(commands.Cog):
     @app_commands.command(name="set_ticket", description="Set the server ticket link for prize claims.")
     @app_commands.guild_only()
     async def set_ticket(self, interaction: discord.Interaction, url: str):
-        if not is_admin(interaction):
+        if not interaction.user.guild_permissions.manage_guild:
             return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
         with db() as conn:
             conn.execute("UPDATE guild_state SET ticket_url=? WHERE guild_id=?", (url, interaction.guild_id))
         await interaction.response.send_message(f"🎫 Ticket link set. Claims will point to: {url}", ephemeral=True)
 
-    @app_commands.command(name="giveaway_status", description="Peek giveaway info (admins only, secret).")
+    @app_commands.command(name="giveaway_status", description="Peek giveaway info (admins only).")
     @app_commands.guild_only()
     async def giveaway_status(self, interaction: discord.Interaction):
-        if not is_admin(interaction):
+        if not interaction.user.guild_permissions.manage_guild:
             return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
         with db() as conn:
             st = conn.execute("""
@@ -680,7 +620,7 @@ class FunCounting(commands.Cog):
     @app_commands.describe(window="How many recent correct counts to include (default 80)")
     @app_commands.guild_only()
     async def giveaway_now(self, interaction: discord.Interaction, window: int = 80):
-        if not is_admin(interaction):
+        if not interaction.user.guild_permissions.manage_guild:
             return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
         gid = interaction.guild_id
         with db() as conn:
@@ -711,7 +651,7 @@ class FunCounting(commands.Cog):
     @app_commands.command(name="reload_banter", description="Reload banter.json without restarting.")
     @app_commands.guild_only()
     async def reload_banter(self, interaction: discord.Interaction):
-        if not is_admin(interaction):
+        if not interaction.user.guild_permissions.manage_guild:
             return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
         global BANTER
         BANTER = load_banter()
