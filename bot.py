@@ -327,28 +327,44 @@ def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached_n: in
         prize = st["giveaway_prize"] or "🎁 Surprise Gift"
         winner_banter = pick_banter("winner") or "Legend behaviour. Take a bow. 👑"
 
-        ticket_url = get_ticket_url(gid)
-        claim_line = (f"To claim your prize: **open a ticket on the server** → {ticket_url}"
-                      if ticket_url else "⚠️ Ticket link not set. Ask an admin to run `/set_ticket`.")
+    # pull ticket url (outside the DB ctx to avoid holding connection)
+    ticket_url = get_ticket_url(gid)
+    claim_text = (
+        "To claim: use the button below to open a ticket within 48 hours. 🎫"
+        if ticket_url else
+        "⚠️ Ticket link not set. Ask an admin to run `/set_ticket`."
+    )
 
-        embed = discord.Embed(
-            title="🎲 Random Giveaway!",
-            description=(
-                f"Hidden jackpot at **{reached_n}**!\n"
-                f"Winner: <@{winner_id}> — {prize} 🥳\n\n"
-                f"**{winner_banter}**\n"
-                f"{claim_line}"
-            ),
-            colour=discord.Colour.gold()
-        )
-        embed.set_footer(text="New jackpot is secretly armed again… keep counting.")
+    embed = discord.Embed(
+        title="🎲 Random Giveaway!",
+        description=(
+            f"Hidden jackpot at **{reached_n}**!\n"
+            f"Winner: <@{winner_id}> — {prize} 🥳\n\n"
+            f"**{winner_banter}**\n\n"
+            f"{claim_text}"
+        ),
+        colour=discord.Colour.gold()
+    )
+    embed.set_footer(text="New jackpot is secretly armed again… keep counting.")
+
+    # add button if we have a URL
+    if ticket_url:
+        view = discord.ui.View()
+        view.add_item(discord.ui.Button(label="🎫 Open Ticket", url=ticket_url))
+        async def _announce():
+            await message.channel.send(embed=embed, view=view)
+    else:
         async def _announce():
             await message.channel.send(embed=embed)
-        bot.loop.create_task(_announce())
 
+    bot.loop.create_task(_announce())
+
+    # update state for next jackpot
+    with db() as conn:
         conn.execute("UPDATE guild_state SET last_giveaway_n=? WHERE guild_id=?", (reached_n, gid))
         _roll_next_target_after(conn, gid, reached_n)
-        return True
+    return True
+
 
 # ========= Events =========
 @bot.event
