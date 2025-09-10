@@ -395,47 +395,51 @@ async def on_message(message: discord.Message):
     if posted is None:
         return
 
-    expected = st["current_number"] + 1
-    last_user = st["last_user_id"]
-
-    # ---- in-memory trackers for runtime only (safe on restarts) ----
-    if not hasattr(bot, "row_counts"):
-        bot.row_counts = {}            # user_id -> consecutive attempts in a row
-    if not hasattr(bot, "locked_players"):
-        bot.locked_players = {}        # user_id -> unlock datetime (UTC)
-
-    now = datetime.utcnow()
-
-    # If locked, silently delete/ignore their message in counting channel
-    if message.author.id in bot.locked_players:
-        unlock_at = bot.locked_players[message.author.id]
-        if now < unlock_at:
-            with contextlib.suppress(Exception):
-                await message.delete()
-            return
+        expected = st["current_number"] + 1
+        last_user = st["last_user_id"]
+    
+        # ---- in-memory trackers (per process) ----
+        if not hasattr(bot, "locked_players"):
+            bot.locked_players = {}        # user_id -> unlock datetime (UTC)
+        if not hasattr(bot, "last_poster_id"):
+            bot.last_poster_id = None      # last user who attempted a number
+        if not hasattr(bot, "last_poster_count"):
+            bot.last_poster_count = 0      # how many consecutive attempts by that user
+    
+        now = datetime.utcnow()
+    
+        # If user is locked, delete & ignore
+        if message.author.id in bot.locked_players:
+            if now < bot.locked_players[message.author.id]:
+                with contextlib.suppress(Exception):
+                    await message.delete()
+                return
+            else:
+                del bot.locked_players[message.author.id]
+    
+        # ---- count consecutive attempts by the SAME author in the channel ----
+        if bot.last_poster_id == message.author.id:
+            bot.last_poster_count += 1
         else:
-            # lock expired
-            del bot.locked_players[message.author.id]
+            bot.last_poster_id = message.author.id
+            bot.last_poster_count = 1
+    
+        # Lock on the 3rd consecutive attempt (3 in a row)
+        if bot.last_poster_count >= 3:
+            bot.locked_players[message.author.id] = now + timedelta(minutes=10)
+            roast = pick_banter("roast") or "Greedy digits get locked, enjoy the bench. 🏀"
+            with contextlib.suppress(Exception):
+                await message.add_reaction(theme_emoji(st, "block"))
+                await message.reply(
+                    f"⛔ {message.author.mention} tried to count **3 times in a row**.\n"
+                    f"Slot locked for **10 minutes**. {roast}"
+                )
+            # reset the streak so they don't insta-trigger again after unlock
+            bot.last_poster_id = None
+            bot.last_poster_count = 0
+            return
 
-    # Track consecutive attempts using last_user_id
-    row_count = bot.row_counts.get(message.author.id, 0)
-    if last_user == message.author.id:
-        row_count += 1
-    else:
-        row_count = 1
-    bot.row_counts[message.author.id] = row_count
 
-    # --- 3-in-a-row penalty (30 minutes lock) ---
-    if row_count >= 3:
-        bot.locked_players[message.author.id] = now + timedelta(minutes=30)
-        roast = pick_banter("roast") or "Greedy digits get locked, enjoy the bench. 🏀"
-        with contextlib.suppress(Exception):
-            await message.add_reaction(theme_emoji(st, "block"))
-            await message.reply(
-                f"⛔ {message.author.mention} tried to count **3 times in a row**.\n"
-                f"Slot locked for **30 minutes**. {roast}"
-            )
-        return
 
     # --- original rule: no double-posts (same user twice) ---
     if last_user == message.author.id:
