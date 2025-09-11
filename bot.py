@@ -281,16 +281,29 @@ MILESTONES = {10, 20, 25, 30, 40, 50, 69, 75, 80, 90, 100, 111, 123, 150, 200, 2
               300, 333, 369, 400, 420, 500, 600, 666, 700, 750, 800, 900, 999, 1000}
 
 # ========= Giveaways =========
-def _roll_next_target_after(conn, gid: int, current_n: int):
-    st = conn.execute(
-        "SELECT giveaway_range_min, giveaway_range_max FROM guild_state WHERE guild_id=?",(gid,)
+# >>> REPLACE your _roll_next_target_after with this exact version <<<
+
+
+def _roll_next_target_after(conn, guild_id: int, current_number: int):
+    row = conn.execute(
+        "SELECT giveaway_range_min, giveaway_range_max FROM guild_state WHERE guild_id=?",
+        (guild_id,)
     ).fetchone()
-    rmin = max(5, int(st["giveaway_range_min"] or 10))
-    rmax = max(rmin + 1, int(st["giveaway_range_max"] or 120))
-    delta = random.randint(rmin, rmax)
-    target = current_n + delta
-    conn.execute("UPDATE guild_state SET giveaway_target=? WHERE guild_id=?", (target, gid))
-    return target
+
+    lo = max(5, int(row["giveaway_range_min"] or 5))
+    hi = int(row["giveaway_range_max"] or (lo + 1))
+    if hi <= lo:
+        hi = lo + 1
+
+    # Draw ONCE: distance to the jackpot within [lo..hi]
+    delta = random.randint(lo, hi)
+    target = int(current_number) + delta
+
+    conn.execute(
+        "UPDATE guild_state SET giveaway_target=?, giveaway_mode='random' WHERE guild_id=?",
+        (target, guild_id)
+    )
+
 
 def ensure_giveaway_target(gid: int):
     with db() as conn:
