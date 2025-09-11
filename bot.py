@@ -378,19 +378,18 @@ def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached_n: in
 
 # ========= Events =========
 @bot.event
-async def on_message(message: discord.Message):
-    if message.author.bot or not message.guild:
-        return
-
-    gid = message.guild.id
-    st = get_state(gid)
-    if not st["channel_id"] or message.channel.id != st["channel_id"]:
-        return
-
-    # per-guild runtime trackers
-    locks = bot.locked_players.setdefault(gid, {})
-    lp = bot.last_poster.setdefault(gid, {"user_id": None, "count": 0})
-
+async def on_ready():
+    init_db()
+    # runtime trackers — per guild
+    bot.locked_players = {}   # {guild_id: {user_id: unlock_dt}}
+    bot.last_poster = {}      # {guild_id: {"user_id": int|None, "count": int}}
+    try:
+        synced = await bot.tree.sync()
+        print(f"Globally synced {len(synced)} commands ✅")
+    except Exception as e:
+        print("Global sync error:", e)
+    print(f"Logged in as {bot.user} ({bot.user.id})")
+    print("DB_PATH:", DB_PATH)
 
 @bot.event
 async def on_guild_join(guild: discord.Guild):
@@ -425,33 +424,37 @@ async def on_message(message: discord.Message):
     expected = st["current_number"] + 1
     last_user = st["last_user_id"]
 
-    # --- timeout check ---
-        now = datetime.utcnow()
-        if message.author.id in locks:
-            if now < locks[message.author.id]:
-                with contextlib.suppress(Exception):
-                    await message.delete()
-                return
-            else:
-                del locks[message.author.id]
+    # per-guild runtime trackers
+    gid = message.guild.id
+    locks = bot.locked_players.setdefault(gid, {})               # {user_id: unlock_dt}
+    lp = bot.last_poster.setdefault(gid, {"user_id": None, "count": 0})
 
+    # --- timeout check ---
+    now = datetime.utcnow()
+    if message.author.id in locks:
+        if now < locks[message.author.id]:
+            with contextlib.suppress(Exception):
+                await message.delete()
+            return
+        else:
+            del locks[message.author.id]
 
     # --- consecutive 3-in-a-row tracking (by author) ---
-    if bot.last_poster_id == message.author.id:
-        bot.last_poster_count += 1
+    if lp["user_id"] == message.author.id:
+        lp["count"] += 1
     else:
-        bot.last_poster_id = message.author.id
-        bot.last_poster_count = 1
-    if bot.last_poster_count >= 3:
-        bot.locked_players[message.author.id] = now + timedelta(minutes=10)
+        lp["user_id"] = message.author.id
+        lp["count"] = 1
+    if lp["count"] >= 3:
+        locks[message.author.id] = now + timedelta(minutes=10)
         roast = pick_banter("roast") or "Greedy digits get locked, enjoy the bench. 🏀"
         with contextlib.suppress(Exception):
             await safe_react(message, "⛔")
             await message.reply(
                 f"⛔ {message.author.mention} tried **3 in a row**. Locked for **10 minutes**. {roast}"
             )
-        bot.last_poster_id = None
-        bot.last_poster_count = 0
+        lp["user_id"] = None
+        lp["count"] = 0
         return
 
     # --- rule: no double posts ---
