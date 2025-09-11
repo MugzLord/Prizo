@@ -359,16 +359,21 @@ def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached_n: in
     )
     embed.set_footer(text="New jackpot is armed… keep counting.")
 
-    if ticket_url:
-        view = discord.ui.View()
-        view.add_item(discord.ui.Button(label="🎫 Open Ticket", url=ticket_url))
-        async def _announce():
+        # Try embed first; if not permitted, send a simple text fallback
+    try:
+        if ticket_url:
+            view = discord.ui.View()
+            view.add_item(discord.ui.Button(label="🎫 Open Ticket", url=ticket_url))
             await message.channel.send(embed=embed, view=view)
-    else:
-        async def _announce():
+        else:
             await message.channel.send(embed=embed)
-
-    bot.loop.create_task(_announce())
+    except Exception:
+        # Fallback: plain text announce (no embed/links required)
+        winner_line = f"Winner: <@{winner_id}> — {prize} 🎉"
+        await message.channel.send(
+            f"{'🎲 Random Giveaway!' if mode != 'fixed' else '🎯 Fixed Milestone Win!'}\n"
+            f"Target: **{reached_n}** hit!\n{winner_line}\n{claim_text}"
+        )
 
     # If we were in random mode, roll next target; if fixed, we already cleared/returned to random above.
     with db() as conn:
