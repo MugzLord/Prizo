@@ -1,4 +1,4 @@
-# bot.py — Prizo (multi-server, no themes, single settings command)
+# bot.py — Prizo (multi-server, no themes, single settings command) + FIXED-NUMBER GIVEAWAY
 import os
 import re
 import json
@@ -97,6 +97,9 @@ def init_db():
         # evolve for older DBs (safe if present)
         with contextlib.suppress(Exception):
             conn.execute("ALTER TABLE guild_state ADD COLUMN ticket_url TEXT")
+        # NEW: add giveaway_mode flag (default random)
+        with contextlib.suppress(Exception):
+            conn.execute("ALTER TABLE guild_state ADD COLUMN giveaway_mode TEXT NOT NULL DEFAULT 'random'")
 
 def get_state(gid: int):
     with db() as conn:
@@ -217,11 +220,11 @@ def load_banter():
     try:
         with open(BANTER_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
-            for k in ("wrong", "winner", "milestone", "roast"):
+            for k in ("wrong", "winner", "milestone", "roast", "nonnumeric", "claim"):
                 data.setdefault(k, [])
             return data
     except Exception:
-        return {"wrong": [], "winner": [], "milestone": [], "roast": []}
+        return {"wrong": [], "winner": [], "milestone": [], "roast": [], "nonnumeric": [], "claim": []}
 BANTER = load_banter()
 
 def pick_banter(cat: str) -> str:
@@ -302,49 +305,60 @@ def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached_n: in
     gid = message.guild.id
     with db() as conn:
         st = conn.execute("""
-        SELECT giveaway_target, last_giveaway_n, giveaway_prize
+        SELECT giveaway_target, last_giveaway_n, giveaway_prize, giveaway_mode
         FROM guild_state WHERE guild_id=?
         """,(gid,)).fetchone()
 
         target = st["giveaway_target"]
+        mode = (st["giveaway_mode"] or "random").lower()
+
         if target is None or reached_n != target:
             if target is None:
                 _roll_next_target_after(conn, gid, reached_n)
             return False
 
-        last_n = st["last_giveaway_n"] or 0
-        rows = conn.execute("""
-        SELECT DISTINCT user_id FROM count_log
-        WHERE guild_id=? AND n>? AND n<=?
-        """,(gid, last_n, reached_n)).fetchall()
-        participants = [r["user_id"] for r in rows]
-        if not participants:
-            _roll_next_target_after(conn, gid, reached_n)
-            conn.execute("UPDATE guild_state SET last_giveaway_n=? WHERE guild_id=?", (reached_n, gid))
-            return False
-
-        winner_id = random.choice(participants)
         prize = st["giveaway_prize"] or "🎁 Surprise Gift"
-        winner_banter = pick_banter("winner") or "Legend behaviour. Take a bow. 👑"
 
-    # pull ticket url (outside the DB ctx to avoid holding connection)
+        if mode == "fixed":
+            # Winner is the author who posted the exact winning number
+            winner_id = message.author.id
+            # Mark last giveaway number and switch back to random mode
+            conn.execute(
+                "UPDATE guild_state SET last_giveaway_n=?, giveaway_mode='random', giveaway_target=NULL WHERE guild_id=?",
+                (reached_n, gid)
+            )
+        else:
+            # RANDOM mode: draw from participants since last jackpot
+            last_n = st["last_giveaway_n"] or 0
+            rows = conn.execute("""
+            SELECT DISTINCT user_id FROM count_log
+            WHERE guild_id=? AND n>? AND n<=?
+            """,(gid, last_n, reached_n)).fetchall()
+            participants = [r["user_id"] for r in rows]
+            if not participants:
+                _roll_next_target_after(conn, gid, reached_n)
+                conn.execute("UPDATE guild_state SET last_giveaway_n=? WHERE guild_id=?", (reached_n, gid))
+                return False
+            winner_id = random.choice(participants)
+            conn.execute("UPDATE guild_state SET last_giveaway_n=? WHERE guild_id=?", (reached_n, gid))
+
+    # pull ticket url (outside DB ctx)
+    ticket_url = get_ticket_url(gid)
     winner_banter = pick_banter("winner") or "Legend behaviour. Take a bow. 👑"
     claim_text = pick_banter("claim") or "To claim your prize: **DM @mikey.moon on Discord** within 48 hours. 💬"
-    
+
     embed = discord.Embed(
-        title="🎲 Random Giveaway!",
+        title="🎲 Random Giveaway!" if mode != "fixed" else "🎯 Fixed Milestone Win!",
         description=(
-            f"Hidden jackpot at **{reached_n}**!\n"
+            f"Target: **{reached_n}** hit!\n"
             f"Winner: <@{winner_id}> — {prize} 🥳\n\n"
             f"**{winner_banter}**\n"
             f"{claim_text}"
         ),
         colour=discord.Colour.gold()
     )
+    embed.set_footer(text="New jackpot is armed… keep counting.")
 
-    embed.set_footer(text="New jackpot is secretly armed again… keep counting.")
-
-    # add button if we have a URL
     if ticket_url:
         view = discord.ui.View()
         view.add_item(discord.ui.Button(label="🎫 Open Ticket", url=ticket_url))
@@ -356,9 +370,8 @@ def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached_n: in
 
     bot.loop.create_task(_announce())
 
-    # update state for next jackpot
+    # If we were in random mode, roll next target; if fixed, we already cleared/returned to random above.
     with db() as conn:
-        conn.execute("UPDATE guild_state SET last_giveaway_n=? WHERE guild_id=?", (reached_n, gid))
         _roll_next_target_after(conn, gid, reached_n)
     return True
 
@@ -410,7 +423,6 @@ async def on_message(message: discord.Message):
             await message.reply(banter)
         return
 
-
     expected = st["current_number"] + 1
     last_user = st["last_user_id"]
 
@@ -443,18 +455,15 @@ async def on_message(message: discord.Message):
         return
 
     # --- rule: no double posts ---
-    # --- rule: no double posts ---
     if last_user == message.author.id:
         mark_wrong(message.guild.id, message.author.id)
         await safe_react(message, "⛔")
-        # Replace {n} with expected before sending
         banter = (pick_banter("wrong") or "Not two in a row. Behave. 😅").replace("{n}", str(expected))
         with contextlib.suppress(Exception):
             await message.reply(
                 f"Not two in a row, {message.author.mention}. {banter} Next is **{expected}** for someone else."
             )
         return
-
 
     # --- rule: must be exact next number ---
     if posted != expected:
@@ -499,7 +508,7 @@ async def on_message(message: discord.Message):
             _touch_user(conn, message.guild.id, message.author.id, correct=0, wrong=0,
                         streak_best=get_state(message.guild.id)["guild_streak"], add_badge=True)
 
-    # hidden giveaway
+    # hidden giveaway (supports random or fixed)
     ensure_giveaway_target(message.guild.id)
     try_giveaway_draw(bot, message, expected)
 
@@ -556,7 +565,7 @@ class FunCounting(commands.Cog):
             except Exception:
                 name = f"<@{r['user_id']}>"
             medal = "👑" if i == 1 else ("🥈" if i == 2 else ("🥉" if i == 3 else " "))
-            lines.append(f"{medal} **#{i}** {name} — **{r['correct_counts']}** correct • 🏅 {r['badges']} badges")
+            lines.append(f"{medal} **#{i}** {name} — **{r['correct_counts']}** correct • 🏅 {r['badges']}")
         em = discord.Embed(title="📈 Top Counters", description="\n".join(lines), colour=discord.Colour.blurple())
         await interaction.response.send_message(embed=em)
 
@@ -581,7 +590,7 @@ class FunCounting(commands.Cog):
             f"🔥 Guild streak: **{st['guild_streak']}** • Best: **{st['best_guild_streak']}**", ephemeral=False
         )
 
-    # Giveaways (random)
+    # Giveaways (random config)
     @app_commands.command(name="giveaway_config", description="Set random giveaway range and prize label.")
     @app_commands.describe(range_min="Min steps until a hidden giveaway (default 10)",
                            range_max="Max steps (default 120)",
@@ -597,7 +606,7 @@ class FunCounting(commands.Cog):
         with db() as conn:
             conn.execute("""
             UPDATE guild_state
-            SET giveaway_range_min=?, giveaway_range_max=?, giveaway_prize=?
+            SET giveaway_range_min=?, giveaway_range_max=?, giveaway_prize=?, giveaway_mode='random'
             WHERE guild_id=?
             """, (range_min, range_max, prize, interaction.guild_id))
             cur = conn.execute("SELECT current_number FROM guild_state WHERE guild_id=?",(interaction.guild_id,)).fetchone()
@@ -623,13 +632,15 @@ class FunCounting(commands.Cog):
             return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
         with db() as conn:
             st = conn.execute("""
-            SELECT current_number, giveaway_target, giveaway_range_min, giveaway_range_max, last_giveaway_n, giveaway_prize, ticket_url
+            SELECT current_number, giveaway_target, giveaway_range_min, giveaway_range_max, last_giveaway_n, giveaway_prize, ticket_url, giveaway_mode
             FROM guild_state WHERE guild_id=?
             """,(interaction.guild_id,)).fetchone()
         left = (st["giveaway_target"] - st["current_number"]) if st["giveaway_target"] else None
         turl = st["ticket_url"] or "— not set —"
+        mode = (st["giveaway_mode"] or "random").lower()
         await interaction.response.send_message(
             f"🔐 Armed.\n"
+            f"- Mode: **{mode}**\n"
             f"- Range: **{st['giveaway_range_min']}–{st['giveaway_range_max']}**\n"
             f"- Since last jackpot: **{st['last_giveaway_n']}**\n"
             f"- Prize: **{st['giveaway_prize']}**\n"
@@ -658,9 +669,6 @@ class FunCounting(commands.Cog):
         winner = random.choice(pool)
 
         ticket_url = get_ticket_url(gid)
-        claim_line = (f"To claim: **open a ticket on the server** → {ticket_url}"
-                      if ticket_url else "⚠️ Ticket link not set. Ask an admin to run `/set_ticket`.")
-
         claim_text = pick_banter("claim") or "To claim your prize: **DM @mikey.moon on Discord** within 48 hours. 💬"
 
         em = discord.Embed(
@@ -668,9 +676,47 @@ class FunCounting(commands.Cog):
             description=f"Winner: <@{winner}> — {st['giveaway_prize']} 🎉\n{claim_text}",
             colour=discord.Colour.purple()
         )
+        if ticket_url:
+            view = discord.ui.View()
+            view.add_item(discord.ui.Button(label="🎫 Open Ticket", url=ticket_url))
+            await interaction.response.send_message(embed=em, view=view, ephemeral=False)
+        else:
+            await interaction.response.send_message(embed=em, ephemeral=False)
 
+    # NEW: Fixed-number mode ON
+    @app_commands.command(name="giveaway_fixed", description="Set a fixed winning number (the typer of that number wins).")
+    @app_commands.describe(number="Exact number that wins (e.g., 56)",
+                           prize="Prize label, e.g. '💎 500 VU Credits'")
+    @app_commands.guild_only()
+    async def giveaway_fixed(self, interaction: discord.Interaction, number: int, prize: str = "💎 500 VU Credits"):
+        if not interaction.user.guild_permissions.manage_guild:
+            return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
+        if number < 1:
+            return await interaction.response.send_message("Number must be **≥ 1**.", ephemeral=True)
 
-        await interaction.response.send_message(embed=em, ephemeral=False)
+        with db() as conn:
+            conn.execute("""
+                UPDATE guild_state
+                SET giveaway_target=?, giveaway_prize=?, giveaway_mode='fixed'
+                WHERE guild_id=?
+            """, (number, prize, interaction.guild_id))
+        await interaction.response.send_message(
+            f"🎯 Fixed milestone armed: **{number}** → prize **{prize}**.\n"
+            f"➡️ Whoever types **{number}** correctly will win.",
+            ephemeral=True
+        )
+
+    # NEW: Fixed-number mode OFF (return to random)
+    @app_commands.command(name="giveaway_fixed_off", description="Disable fixed-number prize and return to random mode.")
+    @app_commands.guild_only()
+    async def giveaway_fixed_off(self, interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.manage_guild:
+            return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
+        with db() as conn:
+            row = conn.execute("SELECT current_number FROM guild_state WHERE guild_id=?", (interaction.guild_id,)).fetchone()
+            conn.execute("UPDATE guild_state SET giveaway_mode='random', giveaway_target=NULL WHERE guild_id=?", (interaction.guild_id,))
+            _roll_next_target_after(conn, interaction.guild_id, row["current_number"])
+        await interaction.response.send_message("✅ Fixed-number mode **OFF**. Random jackpot re-armed.", ephemeral=True)
 
     # Banter JSON management
     @app_commands.command(name="reload_banter", description="Reload banter.json without restarting.")
