@@ -95,6 +95,20 @@ def init_db():
             PRIMARY KEY (guild_id, n)
         );
         """)
+
+                conn.execute("""
+        CREATE TABLE IF NOT EXISTS winners (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id     INTEGER NOT NULL,
+            channel_id   INTEGER NOT NULL,
+            user_id      INTEGER NOT NULL,
+            prize        TEXT    NOT NULL,
+            n_won_at     INTEGER NOT NULL,
+            created_at   TEXT    NOT NULL,
+            UNIQUE(guild_id, n_won_at)
+        );
+        """)
+
         # evolve for older DBs (safe if present)
         with contextlib.suppress(Exception):
             conn.execute("ALTER TABLE guild_state ADD COLUMN ticket_url TEXT")
@@ -317,16 +331,18 @@ def ensure_giveaway_target(gid: int):
 
 async def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached_n: int):
     gid = message.guild.id
+
+    # ----- phase 1: read state & decide winner (no side-effects yet) -----
     with db() as conn:
         st = conn.execute("""
-        SELECT giveaway_target, last_giveaway_n, giveaway_prize, giveaway_mode
-        FROM guild_state WHERE guild_id=?
+            SELECT giveaway_target, last_giveaway_n, giveaway_prize, giveaway_mode
+            FROM guild_state WHERE guild_id=?
         """,(gid,)).fetchone()
 
         target = st["giveaway_target"]
         mode = (st["giveaway_mode"] or "random").lower()
 
-        # Only fire on the exact target in both modes (random is guaranteed to hit this)
+        # Only fire on exact target
         if target is None or reached_n != target:
             if target is None:
                 _roll_next_target_after(conn, gid, reached_n)
@@ -335,32 +351,63 @@ async def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached
         prize = st["giveaway_prize"] or "🎁 Surprise Gift"
 
         if mode == "fixed":
-            winner_id = message.author.id
+            chosen_winner_id = message.author.id
+        else:
+            last_n = st["last_giveaway_n"] or 0
+            rows = conn.execute("""
+                SELECT DISTINCT user_id FROM count_log
+                WHERE guild_id=? AND n>? AND n<=?
+            """,(gid, last_n, reached_n)).fetchall()
+            pool = [r["user_id"] for r in rows]
+            if not pool:
+                _roll_next_target_after(conn, gid, reached_n)
+                conn.execute("UPDATE guild_state SET last_giveaway_n=? WHERE guild_id=?", (reached_n, gid))
+                return False
+            chosen_winner_id = random.choice(pool)
+
+    # ----- phase 2: single-winner lock (transaction) -----
+    # Only ONE process should pass this insert; others will see UNIQUE constraint and bail.
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        # Has a winner for this exact number already been recorded?
+        existing = conn.execute(
+            "SELECT 1 FROM winners WHERE guild_id=? AND n_won_at=?",
+            (gid, reached_n)
+        ).fetchone()
+        if existing:
+            conn.execute("COMMIT")
+            return False
+
+        # Record winner (this is the lock)
+        conn.execute("""
+            INSERT INTO winners (guild_id, channel_id, user_id, prize, n_won_at, created_at)
+            VALUES (?,?,?,?,?,?)
+        """, (gid, message.channel.id, chosen_winner_id, prize, reached_n, datetime.utcnow().isoformat()))
+
+        # Update guild_state for next round
+        if mode == "fixed":
             conn.execute(
                 "UPDATE guild_state SET last_giveaway_n=?, giveaway_mode='random', giveaway_target=NULL WHERE guild_id=?",
                 (reached_n, gid)
             )
         else:
-            last_n = st["last_giveaway_n"] or 0
-            rows = conn.execute("""
-            SELECT DISTINCT user_id FROM count_log
-            WHERE guild_id=? AND n>? AND n<=?
-            """,(gid, last_n, reached_n)).fetchall()
-            participants = [r["user_id"] for r in rows]
-            if not participants:
-                _roll_next_target_after(conn, gid, reached_n)
-                conn.execute("UPDATE guild_state SET last_giveaway_n=? WHERE guild_id=?", (reached_n, gid))
-                return False
-            winner_id = random.choice(participants)
             conn.execute("UPDATE guild_state SET last_giveaway_n=? WHERE guild_id=?", (reached_n, gid))
 
+        # Arm the next random target AFTER this number
+        _roll_next_target_after(conn, gid, reached_n)
+
+        conn.execute("COMMIT")
+
+    # ----- phase 3: announce + DM (only the transaction winner gets here) -----
     winner_banter = pick_banter("winner") or "Legend behaviour. Take a bow. 👑"
     claim_text = pick_banter("claim") or "To claim your prize: **DM @mikey.moon on Discord** within 48 hours. 💬"
+    title = "🎯 Fixed Milestone Win!" if mode == "fixed" else "🎲 Random Giveaway!"
+
     embed = discord.Embed(
-        title="🎲 Random Giveaway!" if mode != "fixed" else "🎯 Fixed Milestone Win!",
+        title=title,
         description=(
             f"Target: **{reached_n}** hit!\n"
-            f"Winner: <@{winner_id}> — {prize} 🥳\n\n"
+            f"Winner: <@{chosen_winner_id}> — {prize} 🥳\n\n"
             f"**{winner_banter}**\n"
             f"{claim_text}"
         ),
@@ -372,24 +419,21 @@ async def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached
         await message.channel.send(embed=embed)
     except Exception:
         await message.channel.send(
-            f"{'🎲 Random Giveaway!' if mode != 'fixed' else '🎯 Fixed Milestone Win!'}\n"
-            f"Target: **{reached_n}** hit!\n"
-            f"Winner: <@{winner_id}> — {prize} 🎉\n{claim_text}"
+            f"{title}\nTarget: **{reached_n}** hit!\nWinner: <@{chosen_winner_id}> — {prize} 🎉\n{claim_text}"
         )
 
+    # DM only the single recorded winner
     try:
-        winner_user = message.guild.get_member(winner_id) or await bot.fetch_user(winner_id)
+        winner_user = message.guild.get_member(chosen_winner_id) or await bot.fetch_user(chosen_winner_id)
         await winner_user.send(
             f"🎉 You won in {message.channel.mention} at **{reached_n}**!\n"
-            f"Prize: {prize}\n"
-            f"{claim_text}"
+            f"Prize: {prize}\n{claim_text}"
         )
     except Exception:
         pass
 
-    with db() as conn:
-        _roll_next_target_after(conn, gid, reached_n)
     return True
+
 
 # ========= Events =========
 @bot.event
