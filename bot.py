@@ -96,7 +96,7 @@ def init_db():
         );
         """)
 
-                conn.execute("""
+        conn.execute("""
         CREATE TABLE IF NOT EXISTS winners (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             guild_id     INTEGER NOT NULL,
