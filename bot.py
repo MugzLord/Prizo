@@ -301,7 +301,7 @@ def ensure_giveaway_target(gid: int):
             return _roll_next_target_after(conn, gid, row["current_number"])
         return row["giveaway_target"]
 
-def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached_n: int):
+async def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached_n: int):
     gid = message.guild.id
     with db() as conn:
         st = conn.execute("""
@@ -343,10 +343,10 @@ def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached_n: in
             conn.execute("UPDATE guild_state SET last_giveaway_n=? WHERE guild_id=?", (reached_n, gid))
 
     # pull ticket url (outside DB ctx)
-    ticket_url = get_ticket_url(gid)
+    # Winner announce (channel) + DM (no ticket button)
     winner_banter = pick_banter("winner") or "Legend behaviour. Take a bow. 👑"
     claim_text = pick_banter("claim") or "To claim your prize: **DM @mikey.moon on Discord** within 48 hours. 💬"
-
+    
     embed = discord.Embed(
         title="🎲 Random Giveaway!" if mode != "fixed" else "🎯 Fixed Milestone Win!",
         description=(
@@ -358,22 +358,29 @@ def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached_n: in
         colour=discord.Colour.gold()
     )
     embed.set_footer(text="New jackpot is armed… keep counting.")
-
-        # Try embed first; if not permitted, send a simple text fallback
+    
+    # Announce in channel (no background task)
     try:
-        if ticket_url:
-            view = discord.ui.View()
-            view.add_item(discord.ui.Button(label="🎫 Open Ticket", url=ticket_url))
-            await message.channel.send(embed=embed, view=view)
-        else:
-            await message.channel.send(embed=embed)
+        await message.channel.send(embed=embed)
     except Exception:
-        # Fallback: plain text announce (no embed/links required)
-        winner_line = f"Winner: <@{winner_id}> — {prize} 🎉"
+        # Fallback: plain text if embeds aren’t allowed
         await message.channel.send(
             f"{'🎲 Random Giveaway!' if mode != 'fixed' else '🎯 Fixed Milestone Win!'}\n"
-            f"Target: **{reached_n}** hit!\n{winner_line}\n{claim_text}"
+            f"Target: **{reached_n}** hit!\n"
+            f"Winner: <@{winner_id}> — {prize} 🎉\n{claim_text}"
         )
+    
+    # DM the winner (best-effort)
+    try:
+        winner_user = message.guild.get_member(winner_id) or await bot.fetch_user(winner_id)
+        await winner_user.send(
+            f"🎉 You won in {message.channel.mention} at **{reached_n}**!\n"
+            f"Prize: {prize}\n"
+            f"{claim_text}"
+        )
+    except Exception:
+        pass
+
 
     # If we were in random mode, roll next target; if fixed, we already cleared/returned to random above.
     with db() as conn:
