@@ -182,18 +182,17 @@ def get_ticket_cfg(gid: int) -> tuple[int | None, int | None]:
 
 # ========= Views (Ticket Buttons) =========
 class OpenTicketPersistent(discord.ui.View):
-    """Persistent button; survives restarts. Only winner may click."""
     def __init__(self):
         super().__init__(timeout=None)
 
     @discord.ui.button(label="🎫 Open Ticket", style=discord.ButtonStyle.green, custom_id="prizo_open_ticket")
     async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # --- parse the announce embed for winner/number/prize ---
         if not interaction.message.embeds:
             return await interaction.response.send_message("No prize info found on this message.", ephemeral=True)
         emb = interaction.message.embeds[0]
         desc = (emb.description or "")
 
-        # Parse winner and number from the announce embed
         m_user = re.search(r"Winner:\s*<@(\d+)>", desc)
         m_num  = re.search(r"(?:Target:?|Number)\s*\*{2}(\d+)\*{2}", desc)
         if not (m_user and m_num):
@@ -204,63 +203,44 @@ class OpenTicketPersistent(discord.ui.View):
         if interaction.user.id != winner_id:
             return await interaction.response.send_message("Only the winner can open this ticket.", ephemeral=True)
 
-        # Get prize text if present
         m_prize = re.search(r"Winner:\s*<@\d+>\s*—\s*(.+?)\s", desc)
         prize = (m_prize.group(1).strip() if m_prize else "🎁 Surprise Gift")
 
-        # ---- Permission preflight (category overrides can block creation) ----
-        cat_id, _ = get_ticket_cfg(interaction.guild_id)
-        cat = interaction.guild.get_channel(cat_id) if cat_id else None
-        me = interaction.guild.me
-        can_manage = False
-        if cat:
-            perms = cat.permissions_for(me)
-            can_manage = perms.manage_channels and perms.view_channel
-        else:
-            perms = me.guild_permissions
-            can_manage = perms.manage_channels and perms.view_channel
+        # --- de-dupe: if a ticket with the same name already exists, just point to it ---
+        name = f"ticket-{interaction.user.name.lower()}-{n_hit}"
+        existing = discord.utils.get(interaction.guild.text_channels, name=name)
+        if existing:
+            await interaction.response.send_message(f"✅ Ticket already exists: {existing.mention}", ephemeral=True)
+            with contextlib.suppress(Exception):
+                button.disabled = True
+                await interaction.message.edit(view=self)
+            return
 
-        if not can_manage:
-            # Graceful fallback: send configured ticket URL if present
-            turl = get_ticket_url(interaction.guild_id)
-            if turl:
-                view = discord.ui.View()
-                view.add_item(discord.ui.Button(label="🎫 Open Ticket (Link)", url=turl))
-                return await interaction.response.send_message(
-                    "I don't have **Manage Channels** for that category. Use the link below:",
-                    view=view, ephemeral=True
-                )
-            return await interaction.response.send_message(
-                "I need **Manage Channels** permission on the target category to create tickets. "
-                "Ask an admin to allow it or set `/set_ticket` as a fallback link.",
-                ephemeral=True
-            )
-
-        # Try to create the ticket channel
+        # --- try to create; if forbidden, fall back to set_ticket URL ---
         try:
             chan = await create_winner_ticket(interaction.guild, interaction.user, prize, n_hit)
         except discord.Forbidden:
-            # Fallback to link if available
             turl = get_ticket_url(interaction.guild_id)
             if turl:
                 view = discord.ui.View()
                 view.add_item(discord.ui.Button(label="🎫 Open Ticket (Link)", url=turl))
                 return await interaction.response.send_message(
-                    "I couldn't create a channel due to permissions. Use the link below:",
+                    "I couldn’t create a channel due to category permissions. Use the link below:",
                     view=view, ephemeral=True
                 )
-            return await interaction.response.send_message("I need **Manage Channels** permission to create tickets.", ephemeral=True)
+            return await interaction.response.send_message(
+                "I need **Manage Channels** permission on the ticket category to create tickets.",
+                ephemeral=True
+            )
         except Exception as e:
             return await interaction.response.send_message(f"Ticket creation failed: {e}", ephemeral=True)
 
-        # Disable this button on the message for everyone
-        # Always confirm success first
+        # Success: confirm first, then try to disable button (ignore failures)
         await interaction.response.send_message(f"✅ Ticket created: {chan.mention}", ephemeral=True)
-
-        # Then *try* to disable button (ignore if forbidden)
         with contextlib.suppress(Exception):
             button.disabled = True
             await interaction.message.edit(view=self)
+
 
 
 async def create_winner_ticket(
@@ -294,7 +274,7 @@ async def create_winner_ticket(
             f"• **IMVU Account Link:**\n"
             f"• **Lucky Number Won:** {n_hit}\n"
             f"• **Prize Claim Notes:**\n\n"
-            "Staff will review & close this ticket after fulfilment."
+            "Mikey.Moon will review this with a keen eye and gracefully close the ticket once it’s verified, then send the creds straight to your VU account."
         ),
         colour=discord.Colour.green()
     )
