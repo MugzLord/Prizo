@@ -254,13 +254,14 @@ class OpenTicketPersistent(discord.ui.View):
             return await interaction.response.send_message(f"Ticket creation failed: {e}", ephemeral=True)
 
         # Disable this button on the message for everyone
-        try:
+        # Always confirm success first
+        await interaction.response.send_message(f"✅ Ticket created: {chan.mention}", ephemeral=True)
+
+        # Then *try* to disable button (ignore if forbidden)
+        with contextlib.suppress(Exception):
             button.disabled = True
             await interaction.message.edit(view=self)
-        except Exception:
-            pass
 
-        await interaction.response.send_message(f"✅ Ticket created: {chan.mention}", ephemeral=True)
 
 async def create_winner_ticket(
     guild: discord.Guild,
