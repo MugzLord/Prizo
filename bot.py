@@ -562,40 +562,42 @@ async def on_message(message: discord.Message):
     with contextlib.suppress(Exception):
         log_correct_count(message.guild.id, expected, message.author.id)
     
-    # 🔥 FORCE WINNER ANNOUNCE when target is reached
-        # 🔥 FORCE WINNER ANNOUNCE when target is reached
-    st_now = get_state(message.guild.id)
-    if (
-        st_now
-        and st_now["giveaway_target"] is not None
-        and expected == int(st_now["giveaway_target"])
-    ):
-        prize = st_now["giveaway_prize"] or "🎁 Surprise Gift"
+    
+    # 🔥 JACKPOT: announce immediately when the posted number hits the target
+    if st["giveaway_target"] is not None and posted == int(st["giveaway_target"]):
+        prize = st["giveaway_prize"] or "🎁 Surprise Gift"
         banter = pick_banter("winner") or "Legend behaviour. Take a bow. 👑"
         claim_text = pick_banter("claim") or "To claim your prize: **DM @mikey.moon on Discord** within 48 hours. 💬"
-        note = "*New jackpot is armed… keep counting.*"  # ← added line
+        note = "*New jackpot is armed… keep counting.*"
 
+        # ticket button if configured
+        ticket_url = get_ticket_url(message.guild.id)
+        view = None
+        if ticket_url:
+            view = discord.ui.View()
+            view.add_item(discord.ui.Button(label="🎫 Open Ticket", url=ticket_url))
 
         await message.channel.send(
-            f"🎯 Jackpot! Number **{expected}** hit!\n"
+            f"🎯 Jackpot! Number **{posted}** hit!\n"
             f"Winner: {message.author.mention} — {prize} 🥳\n"
             f"{banter}\n"
-            f"{claim_text}"
+            f"{claim_text}\n"
             f"{note}",
             view=view
         )
 
         with contextlib.suppress(Exception):
             await message.author.send(
-                f"🎉 You hit jackpot {expected} in **{message.guild.name}**!\n"
+                f"🎉 You hit jackpot **{posted}** in **{message.guild.name}**!\n"
                 f"Prize: {prize}\n"
-                f"{claim_text}"
+                f"{claim_text}\n"
+                f"{('Ticket: ' + ticket_url) if ticket_url else ''}"
             )
 
         # re-arm for next round
         with db() as conn:
-            _roll_next_target_after(conn, message.guild.id, expected)
-        return
+            _roll_next_target_after(conn, message.guild.id, posted)
+
     
     # milestones
     if expected in MILESTONES:
