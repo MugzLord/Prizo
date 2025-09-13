@@ -409,18 +409,23 @@ def _roll_next_target_after(conn, guild_id: int, current_number: int):
         (guild_id,)
     ).fetchone()
 
-    lo = max(5, int(row["giveaway_range_min"] or 5))
+    # ✅ Respect exact config, allow 1..N
+    lo = int(row["giveaway_range_min"] or 1)
     hi = int(row["giveaway_range_max"] or (lo + 1))
-    if hi <= lo:
-        hi = lo + 1
 
-    delta = random.randint(lo, hi)  # distance to jackpot
+    if lo < 1:
+        lo = 1
+    if hi < lo:
+        hi = lo  # allow fixed step if equal
+
+    delta = random.randint(lo, hi)  # inclusive
     target = int(current_number) + delta
 
     conn.execute(
         "UPDATE guild_state SET giveaway_target=?, giveaway_mode='random' WHERE guild_id=?",
         (target, guild_id)
     )
+
 
 def ensure_giveaway_target(gid: int):
     """Only re-arm if target is missing or already passed."""
