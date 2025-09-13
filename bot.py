@@ -654,54 +654,44 @@ async def on_message(message: discord.Message):
         log_correct_count(message.guild.id, expected, message.author.id)
     
     
-    # 🔥 JACKPOT: announce immediately when the posted number hits the target
+    # 🎯 JACKPOT: announce immediately when the posted number hits the target
     if st["giveaway_target"] is not None and posted == int(st["giveaway_target"]):
         prize = st["giveaway_prize"] or "🎁 Surprise Gift"
         banter = pick_banter("winner") or "Legend behaviour. Take a bow. 👑"
-        claim_text = pick_banter("claim") or "To claim your prize: **DM @mikey.moon on Discord** within 48 hours. 💬"
-        note = "*New jackpot is armed… keep counting.*"
-
-        # Try to create a private ticket. If not configured, fall back to static URL (if any).
+    
+        # always show ticket instruction (no DM fallback)
+        claim_text = "Click the **Open Ticket** button below to claim within 48h. 💬"
+        note = "*New jackpot is armed... keep counting.*"
+    
+        # ticket button
+        ticket_url = get_ticket_url(message.guild.id)
         view = None
-        ticket_url = None
-        try:
-            chan = await create_winner_ticket(message.guild, message.author, prize, posted)
-            ticket_url = f"https://discord.com/channels/{message.guild.id}/{chan.id}"
-        except Exception:
-            # Not configured? fall back to saved URL
-            ticket_url = get_ticket_url(message.guild.id)
-        
         if ticket_url:
             view = discord.ui.View()
             view.add_item(discord.ui.Button(label="🎫 Open Ticket", url=ticket_url))
-
+    
+        # embed
         embed = discord.Embed(
             title="🎯 Jackpot Hit!",
             description=(
-                f"Number **{posted}** smashed!\n\n"
+                f"Number {posted} smashed!\n\n"
                 f"**Winner:** {message.author.mention} — {prize} 🥳\n\n"
                 f"{banter}\n"
                 f"{claim_text}\n\n"
-                f"*New jackpot is armed… keep counting.*"
+                f"{note}"
             ),
             colour=discord.Colour.gold()
         )
-        embed.set_footer(text=f"{message.guild.name} • Jackpot Announcement")
-
+        embed.set_footer(text="Jackpot Announcement")
+    
         await message.channel.send(embed=embed, view=view)
-
-
-        with contextlib.suppress(Exception):
-            await message.author.send(
-                f"🎉 You hit jackpot **{posted}** in **{message.guild.name}**!\n"
-                f"Prize: {prize}\n"
-                f"{claim_text}\n"
-                f"{('Ticket: ' + ticket_url) if ticket_url else ''}"
-            )
-
+    
         # re-arm for next round
         with db() as conn:
             _roll_next_target_after(conn, message.guild.id, posted)
+    
+        return
+
 
     
     # milestones
