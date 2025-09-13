@@ -487,30 +487,31 @@ async def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached
 
 
     # Build a ticket button pointing to a PRIVATE ticket channel for the winner.
-view = None
-ticket_jump = None
-try:
-    member = message.guild.get_member(chosen_winner_id) or await message.guild.fetch_member(chosen_winner_id)
-    chan = await create_winner_ticket(message.guild, member, prize, reached_n)
-    ticket_jump = f"https://discord.com/channels/{message.guild.id}/{chan.id}"
-
-    view = discord.ui.View()
-    view.add_item(discord.ui.Button(label="🎫 Open Ticket", url=ticket_jump))
-except Exception:
-    # fallback: use the static ticket_url if configured
-    turl = get_ticket_url(message.guild.id)
-    if turl:
-        ticket_jump = turl
+    # ----- phase 3: announce + DM (only the transaction winner gets here) -----
+    view = None
+    ticket_jump = None
+    try:
+        member = message.guild.get_member(chosen_winner_id) or await message.guild.fetch_member(chosen_winner_id)
+        chan = await create_winner_ticket(message.guild, member, prize, reached_n)
+        ticket_jump = f"https://discord.com/channels/{message.guild.id}/{chan.id}"
         view = discord.ui.View()
         view.add_item(discord.ui.Button(label="🎫 Open Ticket", url=ticket_jump))
+    except Exception:
+        # fallback: static ticket link, if set
+        turl = get_ticket_url(message.guild.id)
+        if turl:
+            ticket_jump = turl
+            view = discord.ui.View()
+            view.add_item(discord.ui.Button(label="🎫 Open Ticket", url=ticket_jump))
 
-# nicer claim text if we have a button/link
-claim_text = (
-    "Click **Open Ticket** to claim within 48 hours. 💬"
-    if ticket_jump
-    else (pick_banter('claim') or "To claim your prize: **DM @mikey.moon** within 48 hours. 💬")
-)
-
+    # friendlier claim text if we have a button/link
+    claim_text = (
+        "Click **Open Ticket** to claim within 48 hours. 💬"
+        if ticket_jump
+        else (pick_banter("claim") or "To claim your prize: **DM @mikey.moon on Discord** within 48 hours. 💬")
+    )
+    winner_banter = pick_banter("winner") or "Legend behaviour. Take a bow. 👑"
+    title = "🎯 Fixed Milestone Win!" if mode == "fixed" else "🎲 Random Giveaway!"
 
     embed = discord.Embed(
         title=title,
@@ -518,30 +519,29 @@ claim_text = (
             f"Target: **{reached_n}** hit!\n"
             f"Winner: <@{chosen_winner_id}> — {prize} 🥳\n\n"
             f"**{winner_banter}**\n"
-            f"{claim_text}"
+            f"{claim_text}\n\n"
+            f"*New jackpot is armed… keep counting.*"
         ),
         colour=discord.Colour.gold()
     )
-    embed.set_footer(text="New jackpot is armed… keep counting.")
+    embed.set_footer(text="Jackpot Announcement")
 
-    try:
-        await message.channel.send(embed=embed, view=view)
-    except Exception:
-        await message.channel.send(
-            f"{title}\nTarget: **{reached_n}** hit!\nWinner: <@{chosen_winner_id}> — {prize} 🎉\n{claim_text}"
-        )
+    await message.channel.send(embed=embed, view=view)
 
     # DM only the single recorded winner
     try:
         winner_user = message.guild.get_member(chosen_winner_id) or await bot.fetch_user(chosen_winner_id)
         await winner_user.send(
             f"🎉 You won in {message.channel.mention} at **{reached_n}**!\n"
-            f"Prize: {prize}\n{claim_text}"
+            f"Prize: {prize}\n"
+            f"{claim_text}\n"
+            f"{('Ticket: ' + ticket_jump) if ticket_jump else ''}"
         )
     except Exception:
         pass
 
     return True
+
 
 
 # ========= Events =========
