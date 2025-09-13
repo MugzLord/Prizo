@@ -112,9 +112,10 @@ def init_db():
 
         # evolve for older DBs (safe if present)
         with contextlib.suppress(Exception):
-            conn.execute("ALTER TABLE guild_state ADD COLUMN ticket_url TEXT")
+            conn.execute("ALTER TABLE guild_state ADD COLUMN giveaway_open INTEGER NOT NULL DEFAULT 1")
         with contextlib.suppress(Exception):
-            conn.execute("ALTER TABLE guild_state ADD COLUMN giveaway_mode TEXT NOT NULL DEFAULT 'random'")
+            conn.execute("ALTER TABLE guild_state ADD COLUMN winner_user_id INTEGER")
+
 
 def get_state(gid: int):
     with db() as conn:
