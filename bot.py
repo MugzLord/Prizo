@@ -610,10 +610,18 @@ async def on_message(message: discord.Message):
     # hidden giveaway
     ensure_giveaway_target(message.guild.id)
 
-    # Only run the old random draw when NOT in 'fixed' (lucky-number) mode
-    st2 = get_state(message.guild.id)
-    if not (st2 and st2.get("giveaway_mode") == "fixed"):
-        await try_giveaway_draw(bot, message, expected)
+    # >>> RANDOM MODE: if target just got hit, draw NOW and stop <<<
+    st_now = get_state(message.guild.id)
+    if (
+        st_now
+        and (st_now.get("giveaway_mode") or "random").lower() == "random"
+        and st_now.get("giveaway_target") is not None
+        and expected == int(st_now["giveaway_target"])
+    ):
+        # try to draw immediately; if it succeeds, stop processing this message
+        did_announce = await try_giveaway_draw(bot, message, expected)
+        if did_announce:
+            return
 
 
 # ========= Slash Commands =========
@@ -757,16 +765,23 @@ class FunCounting(commands.Cog):
         if st["giveaway_target"] is not None:
             left = max(0, st["giveaway_target"] - st["current_number"])  # safe
         turl = st["ticket_url"] or "— not set —"
+        
         mode = (st["giveaway_mode"] or "random").lower()
-        await interaction.response.send_message(
-            f"🔐 Armed.\n"
-            f"- Mode: **{mode}**\n"
-            f"- Range: **{st['giveaway_range_min']}–{st['giveaway_range_max']}**\n"
-            f"- Since last jackpot: **{st['last_giveaway_n']}**\n"
-            f"- Prize: **{st['giveaway_prize']}**\n"
-            f"- Ticket link: {turl}\n"
-            f"- ≈Next in **{left}** steps", ephemeral=True
-        )
+        lines = [
+            "🔐 Armed.",
+            f"- Mode: **{mode}**",
+            f"- Range: **{st['giveaway_range_min']}–{st['giveaway_range_max']}**",
+            f"- Since last jackpot: **{st['last_giveaway_n']}**",
+            f"- Prize: **{st['giveaway_prize']}**",
+            f"- Ticket link: {st['ticket_url'] or '— not set —'}",
+        ]
+        if mode == "random":
+            left = (st["giveaway_target"] or 0) - (st["current_number"] or 0)
+            lines.append(f"- ≈Next in **{max(0, left)}** steps")
+        else:
+            lines.append(f"- 🎯 Lucky number: **hidden ahead**")
+        
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
     @app_commands.command(name="giveaway_now", description="Instant draw among recent correct counters.")
     @app_commands.describe(window="How many recent correct counts to include (default 80)")
