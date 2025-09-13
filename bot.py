@@ -573,12 +573,16 @@ async def on_message(message: discord.Message):
         prize = st_now["giveaway_prize"] or "🎁 Surprise Gift"
         banter = pick_banter("winner") or "Legend behaviour. Take a bow. 👑"
         claim_text = pick_banter("claim") or "To claim your prize: **DM @mikey.moon on Discord** within 48 hours. 💬"
+        note = "*New jackpot is armed… keep counting.*"  # ← added line
+
 
         await message.channel.send(
             f"🎯 Jackpot! Number **{expected}** hit!\n"
             f"Winner: {message.author.mention} — {prize} 🥳\n"
             f"{banter}\n"
             f"{claim_text}"
+            f"{note}",
+            view=view
         )
 
         with contextlib.suppress(Exception):
