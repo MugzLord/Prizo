@@ -487,35 +487,29 @@ async def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached
         .replace("{prize}", prize)
 
 
-    # Build a ticket button pointing to a PRIVATE ticket channel for the winner.
     # ----- phase 3: announce + DM (only the transaction winner gets here) -----
-    # 🎫 create a private ticket channel and attach a button; fall back cleanly if it fails
     view = None
     ticket_jump = None
-    chan = None
+
+    # Try to create a private ticket channel for the winner
     try:
-        # create private ticket channel for winner
-        chan = await create_winner_ticket(message.guild, message.author, prize, posted)
+        member = message.guild.get_member(chosen_winner_id) or await message.guild.fetch_member(chosen_winner_id)
+        chan = await create_winner_ticket(message.guild, member, prize, reached_n)
         ticket_jump = f"https://discord.com/channels/{message.guild.id}/{chan.id}"
         view = discord.ui.View()
         view.add_item(discord.ui.Button(label="🎫 Open Ticket", url=ticket_jump))
     except Exception as e:
-        # log the error so you can see in deploy logs why it failed (usually missing Manage Channels)
         print("create_winner_ticket failed:", repr(e))
-        # fallback: static ticket URL if configured
+        # Fallback: static ticket link if configured
         turl = get_ticket_url(message.guild.id)
         if turl:
             ticket_jump = turl
             view = discord.ui.View()
             view.add_item(discord.ui.Button(label="🎫 Open Ticket", url=turl))
-    
-    # always show a clear claim line
-    claim_text = "Click the **Open Ticket** button below to claim within 48h. 💬"
-    # if absolutely no button, add a visible hint so you notice (permissions misconfig)
-    if view is None:
-        claim_text += "\n*(No button? Bot needs **Manage Channels** to create tickets.)*"
 
-    )
+    # Fixed, simple claim text (avoid nested parentheses)
+    claim_text = "Click the **Open Ticket** button below to claim within 48h. 💬"
+
     winner_banter = pick_banter("winner") or "Legend behaviour. Take a bow. 👑"
     title = "🎯 Fixed Milestone Win!" if mode == "fixed" else "🎲 Random Giveaway!"
 
@@ -534,21 +528,18 @@ async def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached
 
     await message.channel.send(embed=embed, view=view)
 
-    # DM only the single recorded winner
+    # DM winner (optional)
     try:
         winner_user = message.guild.get_member(chosen_winner_id) or await bot.fetch_user(chosen_winner_id)
+        ticket_line = f"\nTicket: {ticket_jump}" if ticket_jump else ""
         await winner_user.send(
             f"🎉 You won in {message.channel.mention} at **{reached_n}**!\n"
-            f"Prize: {prize}\n"
-            f"{claim_text}\n"
-            f"{('Ticket: ' + ticket_jump) if ticket_jump else ''}"
+            f"Prize: {prize}{ticket_line}"
         )
     except Exception:
         pass
 
     return True
-
-
 
 # ========= Events =========
 @bot.event
