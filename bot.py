@@ -705,13 +705,27 @@ class FunCounting(commands.Cog):
         if range_min < 5: range_min = 5
         if range_max <= range_min: range_max = range_min + 1
         with db() as conn:
+            # ensure the guild row exists
+            conn.execute("INSERT OR IGNORE INTO guild_state (guild_id) VALUES (?)", (interaction.guild_id,))
+        
+            # save settings and force random mode
             conn.execute("""
-            UPDATE guild_state
-            SET giveaway_range_min=?, giveaway_range_max=?, giveaway_prize=?, giveaway_mode='random'
-            WHERE guild_id=?
+                UPDATE guild_state
+                SET giveaway_range_min=?,
+                    giveaway_range_max=?,
+                    giveaway_prize=?,
+                    giveaway_mode='random'
+                WHERE guild_id=?
             """, (range_min, range_max, prize, interaction.guild_id))
-            cur = conn.execute("SELECT current_number FROM guild_state WHERE guild_id=?",(interaction.guild_id,)).fetchone()
+        
+            # read current number safely, then arm next random target
+            cur = conn.execute("""
+                SELECT COALESCE(current_number, 0) AS current_number
+                FROM guild_state WHERE guild_id=?
+            """, (interaction.guild_id,)).fetchone()
+        
             _roll_next_target_after(conn, interaction.guild_id, cur["current_number"])
+
         await interaction.response.send_message(
             f"🎰 Giveaway armed. Range **{range_min}–{range_max}** • Prize: **{prize}** (target is secret).",
             ephemeral=True
@@ -798,11 +812,16 @@ class FunCounting(commands.Cog):
     
         # NEW: make the target a future absolute count (current + delta)
         with db() as conn:
-            row = conn.execute("SELECT current_number FROM guild_state WHERE guild_id=?", (interaction.guild_id,)).fetchone()
-            current_n = row["current_number"] or 0
-            delta = random.randint(1, number)              # hidden offset inside the admin-set limit
-            lucky_abs = current_n + delta                   # absolute future count to hit
-    
+            # ensure the guild row exists
+            conn.execute("INSERT OR IGNORE INTO guild_state (guild_id) VALUES (?)", (interaction.guild_id,))
+        
+            # make lucky target an absolute FUTURE count (current + delta)
+            row = conn.execute("SELECT COALESCE(current_number, 0) AS current_number FROM guild_state WHERE guild_id=?",
+                               (interaction.guild_id,)).fetchone()
+            current_n = row["current_number"]
+            delta = random.randint(1, number)
+            lucky_abs = current_n + delta
+        
             conn.execute("""
                 UPDATE guild_state
                 SET giveaway_target=?,
@@ -812,6 +831,7 @@ class FunCounting(commands.Cog):
                     winner_user_id=NULL
                 WHERE guild_id=?
             """, (lucky_abs, prize, interaction.guild_id))
+
     
         await interaction.response.send_message(
             f"🎲 Lucky number armed somewhere in the next **{number}** counts.\n"
