@@ -117,6 +117,12 @@ def init_db():
         with contextlib.suppress(Exception):
             conn.execute("ALTER TABLE guild_state ADD COLUMN winner_user_id INTEGER")
 
+        with contextlib.suppress(Exception):
+            conn.execute("ALTER TABLE guild_state ADD COLUMN ticket_category_id INTEGER")
+        with contextlib.suppress(Exception):
+            conn.execute("ALTER TABLE guild_state ADD COLUMN ticket_staff_role_id INTEGER")
+
+
 
 def get_state(gid: int):
     with db() as conn:
@@ -165,6 +171,58 @@ def get_ticket_url(gid: int) -> str | None:
     with db() as conn:
         row = conn.execute("SELECT ticket_url FROM guild_state WHERE guild_id=?", (gid,)).fetchone()
         return row["ticket_url"] if row else None
+
+def get_ticket_cfg(gid: int) -> tuple[int | None, int | None]:
+    with db() as conn:
+        row = conn.execute(
+            "SELECT ticket_category_id, ticket_staff_role_id FROM guild_state WHERE guild_id=?",
+            (gid,)
+        ).fetchone()
+        if not row:
+            return None, None
+        return row["ticket_category_id"], row["ticket_staff_role_id"]
+
+async def create_winner_ticket(
+    guild: discord.Guild,
+    winner: discord.Member,
+    prize: str,
+    n_hit: int
+) -> discord.TextChannel:
+    """Create a private ticket channel visible to winner + staff role, under configured category."""
+    cat_id, staff_role_id = get_ticket_cfg(guild.id)
+    category = guild.get_channel(cat_id) if cat_id else None  # CategoryChannel
+    staff_role = guild.get_role(staff_role_id) if staff_role_id else None
+
+    # Overwrites: deny @everyone; allow winner; allow staff role (if set)
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        winner: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+    }
+    if staff_role:
+        overwrites[staff_role] = discord.PermissionOverwrite(
+            view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
+        )
+
+    name = f"ticket-{winner.name.lower()}-{n_hit}"
+    chan = await guild.create_text_channel(name=name, category=category, overwrites=overwrites, reason="Prizo prize ticket")
+
+    # Welcome embed
+    em = discord.Embed(
+        title="🎟️ Prize Ticket",
+        description=(
+            f"Winner: {winner.mention}\n"
+            f"Prize: {prize}\n"
+            f"Hit at number **{n_hit}**.\n\n"
+            "A staff member will verify and award your prize here. "
+            "Please provide any needed info/screenshots. 🎁"
+        ),
+        colour=discord.Colour.green()
+    )
+    em.set_footer(text=f"{guild.name} • Ticket")
+    await chan.send(embed=em)
+    return chan
+
+
 
 def get_fixed_max(gid: int) -> int | None:
     with db() as conn:
@@ -428,6 +486,32 @@ async def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached
         .replace("{prize}", prize)
 
 
+    # Build a ticket button pointing to a PRIVATE ticket channel for the winner.
+view = None
+ticket_jump = None
+try:
+    member = message.guild.get_member(chosen_winner_id) or await message.guild.fetch_member(chosen_winner_id)
+    chan = await create_winner_ticket(message.guild, member, prize, reached_n)
+    ticket_jump = f"https://discord.com/channels/{message.guild.id}/{chan.id}"
+
+    view = discord.ui.View()
+    view.add_item(discord.ui.Button(label="🎫 Open Ticket", url=ticket_jump))
+except Exception:
+    # fallback: use the static ticket_url if configured
+    turl = get_ticket_url(message.guild.id)
+    if turl:
+        ticket_jump = turl
+        view = discord.ui.View()
+        view.add_item(discord.ui.Button(label="🎫 Open Ticket", url=ticket_jump))
+
+# nicer claim text if we have a button/link
+claim_text = (
+    "Click **Open Ticket** to claim within 48 hours. 💬"
+    if ticket_jump
+    else (pick_banter('claim') or "To claim your prize: **DM @mikey.moon** within 48 hours. 💬")
+)
+
+
     embed = discord.Embed(
         title=title,
         description=(
@@ -441,7 +525,7 @@ async def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached
     embed.set_footer(text="New jackpot is armed… keep counting.")
 
     try:
-        await message.channel.send(embed=embed)
+        await message.channel.send(embed=embed, view=view)
     except Exception:
         await message.channel.send(
             f"{title}\nTarget: **{reached_n}** hit!\nWinner: <@{chosen_winner_id}> — {prize} 🎉\n{claim_text}"
@@ -577,9 +661,16 @@ async def on_message(message: discord.Message):
         claim_text = pick_banter("claim") or "To claim your prize: **DM @mikey.moon on Discord** within 48 hours. 💬"
         note = "*New jackpot is armed… keep counting.*"
 
-        # ticket button if configured
-        ticket_url = get_ticket_url(message.guild.id)
+        # Try to create a private ticket. If not configured, fall back to static URL (if any).
         view = None
+        ticket_url = None
+        try:
+            chan = await create_winner_ticket(message.guild, message.author, prize, posted)
+            ticket_url = f"https://discord.com/channels/{message.guild.id}/{chan.id}"
+        except Exception:
+            # Not configured? fall back to saved URL
+            ticket_url = get_ticket_url(message.guild.id)
+        
         if ticket_url:
             view = discord.ui.View()
             view.add_item(discord.ui.Button(label="🎫 Open Ticket", url=ticket_url))
@@ -661,6 +752,26 @@ class FunCounting(commands.Cog):
     def __init__(self, b: commands.Bot):
         self.bot = b
 
+    @app_commands.command(name="set_ticket_category", description="Set the category where winner tickets will be created.")
+    @app_commands.guild_only()
+    async def set_ticket_category(self, interaction: discord.Interaction, category: discord.CategoryChannel):
+        if not interaction.user.guild_permissions.manage_guild:
+            return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
+        with db() as conn:
+            conn.execute("UPDATE guild_state SET ticket_category_id=? WHERE guild_id=?", (category.id, interaction.guild_id))
+        await interaction.response.send_message(f"📂 Ticket category set to **{category.name}**.", ephemeral=True)
+    
+    @app_commands.command(name="set_ticket_staffrole", description="Set the staff role that can view/manage winner tickets.")
+    @app_commands.guild_only()
+    async def set_ticket_staffrole(self, interaction: discord.Interaction, role: discord.Role):
+        if not interaction.user.guild_permissions.manage_guild:
+            return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
+        with db() as conn:
+            conn.execute("UPDATE guild_state SET ticket_staff_role_id=? WHERE guild_id=?", (role.id, interaction.guild_id))
+        await interaction.response.send_message(f"🛡️ Ticket staff role set to {role.mention}.", ephemeral=True)
+
+
+    
     # Single settings command
     @app_commands.command(name="settings_counting", description="Set the counting channel and starting number.")
     @app_commands.describe(channel="Channel to count in", start="Start number (default 1)")
