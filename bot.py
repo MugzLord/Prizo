@@ -123,6 +123,36 @@ def init_db():
             conn.execute("ALTER TABLE guild_state ADD COLUMN ticket_staff_role_id INTEGER")
 
 
+class OpenTicketView(discord.ui.View):
+    """Button that only the winner can click; creates a private ticket channel on demand."""
+    def __init__(self, bot: commands.Bot, winner_id: int, prize: str, n_hit: int, timeout: float = 600):
+        super().__init__(timeout=timeout)
+        self.bot = bot
+        self.winner_id = winner_id
+        self.prize = prize
+        self.n_hit = n_hit
+
+    @discord.ui.button(label="🎫 Open Ticket", style=discord.ButtonStyle.green)
+    async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Only the winner may open
+        if interaction.user.id != self.winner_id:
+            await interaction.response.send_message("Only the winner can open this ticket.", ephemeral=True)
+            return
+
+        # Create the private ticket channel (uses your existing helper)
+        chan = await create_winner_ticket(interaction.guild, interaction.user, self.prize, self.n_hit)
+
+        # Acknowledge privately to the winner
+        await interaction.response.send_message(f"✅ Ticket created: {chan.mention}", ephemeral=True)
+
+        # Disable the button to avoid duplicates
+        button.disabled = True
+        try:
+            await interaction.message.edit(view=self)
+        except Exception:
+            pass
+
+
 
 def get_state(gid: int):
     with db() as conn:
@@ -223,6 +253,7 @@ async def create_winner_ticket(
     em.set_footer(text=f"{guild.name} • Ticket")
     await chan.send(embed=em)
     return chan
+
 
 
 def get_fixed_max(gid: int) -> int | None:
