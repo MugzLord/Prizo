@@ -785,22 +785,23 @@ class FunCounting(commands.Cog):
         else:
             await interaction.response.send_message(embed=em, ephemeral=False)
 
-    # /giveaway_fixed — arm a round with a secret lucky number in [1, number]
+    # /giveaway_fixed — arm a round with a secret lucky number AFTER the current count
     @app_commands.guild_only()
     async def giveaway_fixed(self, interaction: discord.Interaction, number: int, prize: str = "💎 500 VU Credits"):
         if not interaction.user.guild_permissions.manage_guild:
             return await interaction.response.send_message(
                 "You need **Manage Server** permission.", ephemeral=True
             )
-    
         if number < 2:
-            return await interaction.response.send_message(
-                "Number must be **≥ 2**.", ephemeral=True
-            )
+            return await interaction.response.send_message("Number must be **≥ 2**.", ephemeral=True)
     
-        lucky_number = random.randint(1, number)  # SECRET lucky number for this round
-    
+        # NEW: make the target a future absolute count (current + delta)
         with db() as conn:
+            row = conn.execute("SELECT current_number FROM guild_state WHERE guild_id=?", (interaction.guild_id,)).fetchone()
+            current_n = row["current_number"] or 0
+            delta = random.randint(1, number)              # hidden offset inside the admin-set limit
+            lucky_abs = current_n + delta                   # absolute future count to hit
+    
             conn.execute("""
                 UPDATE guild_state
                 SET giveaway_target=?,
@@ -809,13 +810,14 @@ class FunCounting(commands.Cog):
                     giveaway_open=1,
                     winner_user_id=NULL
                 WHERE guild_id=?
-            """, (lucky_number, prize, interaction.guild_id))
+            """, (lucky_abs, prize, interaction.guild_id))
     
         await interaction.response.send_message(
-            f"🎲 Lucky number armed **1–{number}**.\n"
+            f"🎲 Lucky number armed somewhere in the next **{number}** counts.\n"
             f"First to hit it wins **{prize}**.",
             ephemeral=True
         )
+
 
 
     # NEW: Fixed-number mode OFF (return to random)
