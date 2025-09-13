@@ -12,6 +12,11 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+import os
+if os.getenv("DISABLE_BOT") == "true":
+    print("Prizo disabled by environment variable.")
+    exit()
+
 # ========= Basics =========
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
