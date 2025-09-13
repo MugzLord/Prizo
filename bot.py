@@ -544,41 +544,31 @@ async def on_message(message: discord.Message):
     # --- success! ---
     bump_ok(message.guild.id, message.author.id)
     await safe_react(message, "✅")
-
+    
     # log for giveaway eligibility
     with contextlib.suppress(Exception):
         log_correct_count(message.guild.id, expected, message.author.id)
-
-        # >>> LUCKY NUMBER WINNER (first to hit target wins this round) <<<
-    row_now = get_state(message.guild.id)  # fresh state
+    
+    # 🔥 FORCE WINNER ANNOUNCE when target is reached
+    st_now = get_state(message.guild.id)
     if (
-        row_now
-        and row_now.get("giveaway_mode") == "fixed"
-        and row_now.get("giveaway_open") == 1
-        and row_now.get("giveaway_target") is not None
-        and expected == int(row_now["giveaway_target"])   # <-- they just hit it
+        st_now
+        and st_now["giveaway_target"] is not None
+        and expected == int(st_now["giveaway_target"])
     ):
-        # Atomically claim so two simultaneous messages can't both win
-        with db() as conn:
-            cur = conn.execute("""
-                UPDATE guild_state
-                SET winner_user_id=?, giveaway_open=0
-                WHERE guild_id=?
-                  AND giveaway_open=1
-                  AND (winner_user_id IS NULL OR winner_user_id=0)
-            """, (message.author.id, message.guild.id))
-            claimed = cur.rowcount
-
-        if claimed:
-            prize = row_now.get("giveaway_prize") or ""
-            await message.channel.send(
-                f"🎯 Lucky number **{expected}**! {message.author.mention} wins {prize} 🎁"
+        prize = st_now["giveaway_prize"] or "🎁 Surprise Gift"
+        await message.channel.send(
+            f"🎯 Jackpot! Number **{expected}** hit!\nWinner: {message.author.mention} — {prize} 🥳"
+        )
+        with contextlib.suppress(Exception):
+            await message.author.send(
+                f"🎉 You hit jackpot {expected} in **{message.guild.name}**!\nPrize: {prize}"
             )
-            with contextlib.suppress(Exception):
-                await message.author.send(
-                    f"🎉 You hit the lucky number **{expected}** in **{message.guild.name}** and won {prize}!"
-                )
-            return  # stop here: no further giveaway logic this message
+        # re-arm for next round
+        with db() as conn:
+            _roll_next_target_after(conn, message.guild.id, expected)
+        return
+
 
     
     # milestones
