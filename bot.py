@@ -404,9 +404,22 @@ async def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached
         conn.execute("COMMIT")
 
     # ----- phase 3: announce + DM (only the transaction winner gets here) -----
-    winner_banter = pick_banter("winner") or "Legend behaviour. Take a bow. 👑"
-    claim_text = pick_banter("claim") or "To claim your prize: **DM @mikey.moon on Discord** within 48 hours. 💬"
-    title = "🎯 Fixed Milestone Win!" if mode == "fixed" else "🎲 Random Giveaway!"
+    banter = (pick_banter("winner") or "Legend behaviour. Take a bow. 👑")
+    await message.channel.send(
+        f"🎯 Jackpot! Number **{expected}** hit!\n"
+        f"Winner: {message.author.mention} — {prize} 🥳\n"
+        f"{banter}"
+    )
+    # keep re-arm, but DO NOT return so milestones/facts still run
+    with db() as conn:
+        _roll_next_target_after(conn, message.guild.id, expected)
+
+    
+    claim_text = (pick_banter("claim") or "To claim your prize: **DM @mikey.moon on Discord** within 48 hours. 💬")\
+        .replace("{user}", f"<@{chosen_winner_id}>")\
+        .replace("{n}", str(reached_n))\
+        .replace("{prize}", prize)
+
 
     embed = discord.Embed(
         title=title,
