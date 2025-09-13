@@ -241,8 +241,6 @@ class OpenTicketPersistent(discord.ui.View):
             button.disabled = True
             await interaction.message.edit(view=self)
 
-
-
 async def create_winner_ticket(
     guild: discord.Guild,
     winner: discord.Member,
@@ -254,9 +252,19 @@ async def create_winner_ticket(
     category = guild.get_channel(cat_id) if cat_id else None
     staff_role = guild.get_role(staff_role_id) if staff_role_id else None
 
+    # Make sure we have a full Member object
+    if not isinstance(winner, discord.Member):
+        winner = guild.get_member(winner.id) or await guild.fetch_member(winner.id)
+
+    # Build explicit overwrites (deny @everyone; allow winner, bot, staff)
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
-        winner: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+        winner: discord.PermissionOverwrite(
+            view_channel=True, send_messages=True, read_message_history=True
+        ),
+        guild.me: discord.PermissionOverwrite(  # ensure the bot always has access
+            view_channel=True, send_messages=True, read_message_history=True, manage_channels=True
+        ),
     }
     if staff_role:
         overwrites[staff_role] = discord.PermissionOverwrite(
@@ -264,8 +272,35 @@ async def create_winner_ticket(
         )
 
     name = f"ticket-{winner.name.lower()}-{n_hit}"
-    chan = await guild.create_text_channel(name=name, category=category, overwrites=overwrites, reason="Prizo prize ticket")
 
+    # Create the channel (unsynced from category by virtue of custom overwrites)
+    chan = await guild.create_text_channel(
+        name=name,
+        category=category,
+        overwrites=overwrites,
+        reason="Prizo prize ticket"
+    )
+
+    # 🔒 Double-ensure permissions in case category sync/overrides interfered
+    await chan.set_permissions(
+        winner, view_channel=True, send_messages=True, read_message_history=True
+    )
+    if staff_role:
+        await chan.set_permissions(
+            staff_role, view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
+        )
+    await chan.set_permissions(
+        guild.default_role, view_channel=False
+    )
+    await chan.set_permissions(
+        guild.me, view_channel=True, send_messages=True, read_message_history=True, manage_channels=True
+    )
+
+    # (Optional) make sure the channel stays **unsynced** from category so these overwrites persist
+    with contextlib.suppress(Exception):
+        await chan.edit(sync_permissions=False)
+
+    # Welcome embed
     em = discord.Embed(
         title="🎟️ Prize Ticket",
         description=(
@@ -274,7 +309,7 @@ async def create_winner_ticket(
             f"• **IMVU Account Link:**\n"
             f"• **Lucky Number Won:** {n_hit}\n"
             f"• **Prize Claim Notes:**\n\n"
-            "Mikey.Moon will review this with a keen eye and gracefully close the ticket once it’s verified, then send the creds straight to your VU account."
+            "Staff will review & close this ticket after fulfilment."
         ),
         colour=discord.Colour.green()
     )
