@@ -210,18 +210,19 @@ async def create_winner_ticket(
     em = discord.Embed(
         title="🎟️ Prize Ticket",
         description=(
-            f"Winner: {winner.mention}\n"
-            f"Prize: {prize}\n"
-            f"Hit at number **{n_hit}**.\n\n"
-            "A staff member will verify and award your prize here. "
-            "Please provide any needed info/screenshots. 🎁"
+            f"🎟 Ticket for {winner.mention}\n\n"
+            f"Please provide the **following**:\n"
+            f"• **IMVU Account Link:**\n"
+            f"• **Lucky Number Won:** {n_hit}\n"
+            f"• **Prize Claim Notes:**\n\n"
+            "Staff can then track/close this ticket later."
+    
         ),
         colour=discord.Colour.green()
     )
     em.set_footer(text=f"{guild.name} • Ticket")
     await chan.send(embed=em)
     return chan
-
 
 
 def get_fixed_max(gid: int) -> int | None:
