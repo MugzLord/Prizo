@@ -563,6 +563,7 @@ async def on_message(message: discord.Message):
         log_correct_count(message.guild.id, expected, message.author.id)
     
     # 🔥 FORCE WINNER ANNOUNCE when target is reached
+        # 🔥 FORCE WINNER ANNOUNCE when target is reached
     st_now = get_state(message.guild.id)
     if (
         st_now
@@ -570,19 +571,27 @@ async def on_message(message: discord.Message):
         and expected == int(st_now["giveaway_target"])
     ):
         prize = st_now["giveaway_prize"] or "🎁 Surprise Gift"
+        banter = pick_banter("winner") or "Legend behaviour. Take a bow. 👑"
+        claim_text = pick_banter("claim") or "To claim your prize: **DM @mikey.moon on Discord** within 48 hours. 💬"
+
         await message.channel.send(
-            f"🎯 Jackpot! Number **{expected}** hit!\nWinner: {message.author.mention} — {prize} 🥳"
+            f"🎯 Jackpot! Number **{expected}** hit!\n"
+            f"Winner: {message.author.mention} — {prize} 🥳\n"
+            f"{banter}\n"
+            f"{claim_text}"
         )
+
         with contextlib.suppress(Exception):
             await message.author.send(
-                f"🎉 You hit jackpot {expected} in **{message.guild.name}**!\nPrize: {prize}"
+                f"🎉 You hit jackpot {expected} in **{message.guild.name}**!\n"
+                f"Prize: {prize}\n"
+                f"{claim_text}"
             )
+
         # re-arm for next round
         with db() as conn:
             _roll_next_target_after(conn, message.guild.id, expected)
         return
-
-
     
     # milestones
     if expected in MILESTONES:
