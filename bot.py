@@ -308,8 +308,8 @@ async def create_winner_ticket(
             f"Please provide:\n"
             f"• **IMVU Account Link:**\n"
             f"• **Lucky Number Won:** {n_hit}\n"
-            f"• **Prize Claim Notes:**\n\n"
-            "Staff will review & close this ticket after fulfilment."
+            f"• **Prize Claim Notes:**preferred delivery method (credits or gift)(\n\n"
+            "Mikey.Moon will review, shut this ticket down, and fire the creds to your VU account, try not to blow it all on dodgy shoes. 😏."
         ),
         colour=discord.Colour.green()
     )
