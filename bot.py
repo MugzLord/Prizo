@@ -73,7 +73,7 @@ def init_db():
             giveaway_prize TEXT NOT NULL DEFAULT '💎 500 VU Credits',
             ticket_url TEXT,
             giveaway_mode TEXT NOT NULL DEFAULT 'random',
-            giveaway_fixed_max INTEGER 
+            giveaway_fixed_max INTEGER
         );
         """)
         conn.execute("""
@@ -97,7 +97,6 @@ def init_db():
             PRIMARY KEY (guild_id, n)
         );
         """)
-
         conn.execute("""
         CREATE TABLE IF NOT EXISTS winners (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -122,27 +121,49 @@ def init_db():
             conn.execute("ALTER TABLE guild_state ADD COLUMN ticket_staff_role_id INTEGER")
 
 
-class OpenTicketView(discord.ui.View):
-    """Only the winner can click; creates a private ticket channel."""
-    def __init__(self, bot: commands.Bot, winner_id: int, prize: str, n_hit: int):
-        super().__init__(timeout=None)  # persistent while bot is running
-        self.bot = bot
-        self.winner_id = winner_id
-        self.prize = prize
-        self.n_hit = n_hit
+# ========= Views (Ticket Buttons) =========
+class OpenTicketPersistent(discord.ui.View):
+    """Persistent button; survives restarts. Only winner may click."""
+    def __init__(self):
+        super().__init__(timeout=None)
 
-    @discord.ui.button(label="🎫 Open Ticket", style=discord.ButtonStyle.green)
+    @discord.ui.button(label="🎫 Open Ticket", style=discord.ButtonStyle.green, custom_id="prizo_open_ticket")
     async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.winner_id:
-            await interaction.response.send_message("Only the winner can open this ticket.", ephemeral=True)
-            return
-        chan = await create_winner_ticket(interaction.guild, interaction.user, self.prize, self.n_hit)
-        await interaction.response.send_message(f"✅ Ticket created: {chan.mention}", ephemeral=True)
-        button.disabled = True
+        if not interaction.message.embeds:
+            return await interaction.response.send_message("No prize info found on this message.", ephemeral=True)
+        emb = interaction.message.embeds[0]
+        desc = (emb.description or "")
+
+        # Parse winner and number from the announce embed
+        m_user = re.search(r"Winner:\s*<@(\d+)>", desc)
+        m_num  = re.search(r"(?:Target:?|Number)\s*\*{2}(\d+)\*{2}", desc)
+        if not (m_user and m_num):
+            return await interaction.response.send_message("Couldn't read winner/number from this message.", ephemeral=True)
+
+        winner_id = int(m_user.group(1))
+        n_hit     = int(m_num.group(1))
+        if interaction.user.id != winner_id:
+            return await interaction.response.send_message("Only the winner can open this ticket.", ephemeral=True)
+
+        # Get prize text if present
+        m_prize = re.search(r"Winner:\s*<@\d+>\s*—\s*(.+?)\s", desc)
+        prize = (m_prize.group(1).strip() if m_prize else "🎁 Surprise Gift")
+
         try:
+            chan = await create_winner_ticket(interaction.guild, interaction.user, prize, n_hit)
+        except discord.Forbidden:
+            return await interaction.response.send_message("I need **Manage Channels** permission to create tickets.", ephemeral=True)
+        except Exception as e:
+            return await interaction.response.send_message(f"Ticket creation failed: {e}", ephemeral=True)
+
+        # Disable this button on the message for everyone
+        try:
+            button.disabled = True
             await interaction.message.edit(view=self)
         except Exception:
             pass
+
+        await interaction.response.send_message(f"✅ Ticket created: {chan.mention}", ephemeral=True)
 
 
 def get_state(gid: int):
@@ -211,10 +232,9 @@ async def create_winner_ticket(
 ) -> discord.TextChannel:
     """Create a private ticket channel visible to winner + staff role, under configured category."""
     cat_id, staff_role_id = get_ticket_cfg(guild.id)
-    category = guild.get_channel(cat_id) if cat_id else None  # CategoryChannel
+    category = guild.get_channel(cat_id) if cat_id else None
     staff_role = guild.get_role(staff_role_id) if staff_role_id else None
 
-    # Overwrites: deny @everyone; allow winner; allow staff role (if set)
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
         winner: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
@@ -227,16 +247,15 @@ async def create_winner_ticket(
     name = f"ticket-{winner.name.lower()}-{n_hit}"
     chan = await guild.create_text_channel(name=name, category=category, overwrites=overwrites, reason="Prizo prize ticket")
 
-    # Welcome embed
     em = discord.Embed(
         title="🎟️ Prize Ticket",
         description=(
             f"🎟 Ticket for {winner.mention}\n\n"
-            f"Please provide the **following**:\n"
+            f"Please provide:\n"
             f"• **IMVU Account Link:**\n"
             f"• **Lucky Number Won:** {n_hit}\n"
             f"• **Prize Claim Notes:**\n\n"
-            "Staff can then track/close this ticket later."
+            "Staff will review & close this ticket after fulfilment."
         ),
         colour=discord.Colour.green()
     )
@@ -404,8 +423,7 @@ def _roll_next_target_after(conn, guild_id: int, current_number: int):
     )
 
 def ensure_giveaway_target(gid: int):
-    """Only re-arm if target is missing or already passed.
-       IMPORTANT: do NOT re-arm when target == current (that's the win moment)."""
+    """Only re-arm if target is missing or already passed."""
     with db() as conn:
         row = conn.execute(
             "SELECT current_number, giveaway_target FROM guild_state WHERE guild_id=?", (gid,)
@@ -478,13 +496,11 @@ async def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached
         _roll_next_target_after(conn, gid, reached_n)
         conn.execute("COMMIT")
 
-    # ----- phase 3: announce + interactive ticket button -----
+    # ----- phase 3: announce + persistent ticket button -----
     winner_mention = f"<@{chosen_winner_id}>"
     winner_banter = pick_banter("winner") or "Legend behaviour. Take a bow. 👑"
     title = "🎯 Fixed Milestone Win!" if mode == "fixed" else "🎲 Random Giveaway!"
     claim_text = "Click **Open Ticket** below to claim within 48h. 💬"
-
-    view = OpenTicketView(bot, chosen_winner_id, prize, reached_n)
 
     embed = discord.Embed(
         title=title,
@@ -499,9 +515,10 @@ async def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached
     )
     embed.set_footer(text="Jackpot Announcement")
 
+    view = OpenTicketPersistent()
     await message.channel.send(embed=embed, view=view)
 
-    # DM winner (optional)
+    # Optional DM
     try:
         winner_user = message.guild.get_member(chosen_winner_id) or await bot.fetch_user(chosen_winner_id)
         await winner_user.send(
@@ -518,6 +535,13 @@ async def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached
 @bot.event
 async def on_ready():
     init_db()
+
+    # Register the persistent ticket button (works across restarts)
+    try:
+        bot.add_view(OpenTicketPersistent())
+    except Exception as e:
+        print("Failed to add persistent view:", e)
+
     # runtime trackers — per guild
     bot.locked_players = {}   # {guild_id: {user_id: unlock_dt}}
     bot.last_poster = {}      # {guild_id: {"user_id": int|None, "count": int}}
@@ -553,7 +577,6 @@ async def on_message(message: discord.Message):
 
     posted = extract_int(message.content, strict=bool(st["numbers_only"]))
     if posted is None:
-        # Warn with funny banter instead of ignoring
         banter = (pick_banter("nonnumeric") or "Numbers only in here, mate.").replace("{user}", message.author.mention)
         with contextlib.suppress(Exception):
             await message.reply(banter)
@@ -618,11 +641,11 @@ async def on_message(message: discord.Message):
     # --- success! ---
     bump_ok(message.guild.id, message.author.id)
     await safe_react(message, "✅")
-    
+
     # log for giveaway eligibility
     with contextlib.suppress(Exception):
         log_correct_count(message.guild.id, expected, message.author.id)
-    
+
     # milestones
     if expected in MILESTONES:
         em = discord.Embed(
@@ -649,12 +672,11 @@ async def on_message(message: discord.Message):
             _touch_user(conn, message.guild.id, message.author.id, correct=0, wrong=0,
                         streak_best=get_state(message.guild.id)["guild_streak"], add_badge=True)
 
-    # hidden giveaway target is maintained separately
+    # hidden giveaway target maintenance
     ensure_giveaway_target(message.guild.id)
 
-    # >>> RANDOM/FIXED: if target just got hit, draw NOW and stop <<<
+    # >>> If target just got hit, perform the draw and announce (random or fixed)
     st_now = get_state(message.guild.id)
-    mode_now = (st_now["giveaway_mode"] or "random").lower()
     target_now = st_now["giveaway_target"]
     if target_now is not None and expected == int(target_now):
         did_announce = await try_giveaway_draw(bot, message, expected)
@@ -675,7 +697,7 @@ class FunCounting(commands.Cog):
         with db() as conn:
             conn.execute("UPDATE guild_state SET ticket_category_id=? WHERE guild_id=?", (category.id, interaction.guild_id))
         await interaction.response.send_message(f"📂 Ticket category set to **{category.name}**.", ephemeral=True)
-    
+
     @app_commands.command(name="set_ticket_staffrole", description="Set the staff role that can view/manage winner tickets.")
     @app_commands.guild_only()
     async def set_ticket_staffrole(self, interaction: discord.Interaction, role: discord.Role):
@@ -685,7 +707,6 @@ class FunCounting(commands.Cog):
             conn.execute("UPDATE guild_state SET ticket_staff_role_id=? WHERE guild_id=?", (role.id, interaction.guild_id))
         await interaction.response.send_message(f"🛡️ Ticket staff role set to {role.mention}.", ephemeral=True)
 
-    # Single settings command
     @app_commands.command(name="settings_counting", description="Set the counting channel and starting number.")
     @app_commands.describe(channel="Channel to count in", start="Start number (default 1)")
     @app_commands.guild_only()
@@ -701,7 +722,6 @@ class FunCounting(commands.Cog):
             ephemeral=True
         )
 
-    # Optional toggles
     @app_commands.command(name="numbers_only", description="Toggle numbers-only mode.")
     @app_commands.guild_only()
     async def numbers_only_cmd(self, interaction: discord.Interaction, on: bool):
@@ -718,7 +738,6 @@ class FunCounting(commands.Cog):
         set_facts_on(interaction.guild_id, on)
         await interaction.response.send_message(f"Fun facts: **{'ON' if on else 'OFF'}**", ephemeral=True)
 
-    # Leaderboards / stats
     @app_commands.command(name="leaderboard", description="Show the top counters (with badges).")
     @app_commands.guild_only()
     async def leaderboard(self, interaction: discord.Interaction):
@@ -772,10 +791,7 @@ class FunCounting(commands.Cog):
         if range_min < 5: range_min = 5
         if range_max <= range_min: range_max = range_min + 1
         with db() as conn:
-            # ensure the guild row exists
             conn.execute("INSERT OR IGNORE INTO guild_state (guild_id) VALUES (?)", (interaction.guild_id,))
-        
-            # save settings and force random mode
             conn.execute("""
                 UPDATE guild_state
                 SET giveaway_range_min=?,
@@ -784,13 +800,10 @@ class FunCounting(commands.Cog):
                     giveaway_mode='random'
                 WHERE guild_id=?
             """, (range_min, range_max, prize, interaction.guild_id))
-        
-            # read current number safely, then arm next random target
             cur = conn.execute("""
                 SELECT COALESCE(current_number, 0) AS current_number
                 FROM guild_state WHERE guild_id=?
             """, (interaction.guild_id,)).fetchone()
-        
             _roll_next_target_after(conn, interaction.guild_id, cur["current_number"])
 
         await interaction.response.send_message(
@@ -798,7 +811,7 @@ class FunCounting(commands.Cog):
             ephemeral=True
         )
 
-    @app_commands.command(name="set_ticket", description="Set the server ticket link for prize claims.")
+    @app_commands.command(name="set_ticket", description="Set the server ticket link for prize claims (fallback).")
     @app_commands.guild_only()
     async def set_ticket(self, interaction: discord.Interaction, url: str):
         if not interaction.user.guild_permissions.manage_guild:
@@ -817,8 +830,8 @@ class FunCounting(commands.Cog):
             SELECT current_number, giveaway_target, giveaway_range_min, giveaway_range_max, last_giveaway_n, giveaway_prize, ticket_url, giveaway_mode
             FROM guild_state WHERE guild_id=?
             """,(interaction.guild_id,)).fetchone()
-        turl = st["ticket_url"] or "— not set —"
         mode = (st["giveaway_mode"] or "random").lower()
+        turl = st["ticket_url"] or "— not set —"
         lines = [
             "🔐 Armed.",
             f"- Mode: **{mode}**",
@@ -854,7 +867,6 @@ class FunCounting(commands.Cog):
             return await interaction.response.send_message("No recent participants to draw from.", ephemeral=True)
         winner = random.choice(pool)
 
-        # Prefer interactive ticketing via button in the channel, but allow link fallback here
         ticket_url = get_ticket_url(gid)
         claim_text = pick_banter("claim") or "To claim your prize: **DM @mikey.moon on Discord** within 48 hours. 💬"
 
@@ -870,22 +882,16 @@ class FunCounting(commands.Cog):
         else:
             await interaction.response.send_message(embed=em, ephemeral=False)
 
-    # /giveaway_fixed — arm a round with a secret lucky number AFTER the current count
     @app_commands.command(name="giveaway_fixed", description="Arm a fixed-number jackpot hidden within the next N counts.")
     @app_commands.guild_only()
     async def giveaway_fixed(self, interaction: discord.Interaction, number: int, prize: str = "💎 500 VU Credits"):
         if not interaction.user.guild_permissions.manage_guild:
-            return await interaction.response.send_message(
-                "You need **Manage Server** permission.", ephemeral=True
-            )
+            return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
         if number < 2:
             return await interaction.response.send_message("Number must be **≥ 2**.", ephemeral=True)
-    
+
         with db() as conn:
-            # ensure the guild row exists
             conn.execute("INSERT OR IGNORE INTO guild_state (guild_id) VALUES (?)", (interaction.guild_id,))
-        
-            # make lucky target an absolute FUTURE count (current + delta)
             row = conn.execute(
                 "SELECT COALESCE(current_number, 0) AS current_number FROM guild_state WHERE guild_id=?",
                 (interaction.guild_id,)
@@ -893,7 +899,6 @@ class FunCounting(commands.Cog):
             current_n = row["current_number"]
             delta = random.randint(1, number)
             lucky_abs = current_n + delta
-        
             conn.execute("""
                 UPDATE guild_state
                 SET giveaway_target=?,
@@ -904,14 +909,13 @@ class FunCounting(commands.Cog):
                     giveaway_fixed_max=?
                 WHERE guild_id=?
             """, (lucky_abs, prize, number, interaction.guild_id))
-    
+
         await interaction.response.send_message(
             f"🎲 Lucky number armed somewhere in the next **{number}** counts.\n"
             f"First to hit it wins **{prize}**.",
             ephemeral=True
         )
 
-    # NEW: Fixed-number mode OFF (return to random)
     @app_commands.command(name="giveaway_fixed_off", description="Disable fixed-number prize and return to random mode.")
     @app_commands.guild_only()
     async def giveaway_fixed_off(self, interaction: discord.Interaction):
@@ -923,7 +927,6 @@ class FunCounting(commands.Cog):
             _roll_next_target_after(conn, interaction.guild_id, row["current_number"])
         await interaction.response.send_message("✅ Fixed-number mode **OFF**. Random jackpot re-armed.", ephemeral=True)
 
-    # Banter JSON management
     @app_commands.command(name="reload_banter", description="Reload banter.json without restarting.")
     @app_commands.guild_only()
     async def reload_banter(self, interaction: discord.Interaction):
@@ -933,7 +936,6 @@ class FunCounting(commands.Cog):
         BANTER = load_banter()
         await interaction.response.send_message("✅ Banter reloaded.", ephemeral=True)
 
-    # Optional: manual /sync (admin)
     @app_commands.command(name="sync", description="Force re-sync slash commands (admin).")
     @app_commands.guild_only()
     async def sync_cmd(self, interaction: discord.Interaction):
