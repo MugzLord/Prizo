@@ -72,7 +72,8 @@ def init_db():
             last_giveaway_n INTEGER NOT NULL DEFAULT 0,
             giveaway_prize TEXT NOT NULL DEFAULT '💎 500 VU Credits',
             ticket_url TEXT,
-            giveaway_mode TEXT NOT NULL DEFAULT 'random'
+            giveaway_mode TEXT NOT NULL DEFAULT 'random',
+            giveaway_fixed_max INTEGER 
         );
         """)
         conn.execute("""
@@ -164,6 +165,12 @@ def get_ticket_url(gid: int) -> str | None:
     with db() as conn:
         row = conn.execute("SELECT ticket_url FROM guild_state WHERE guild_id=?", (gid,)).fetchone()
         return row["ticket_url"] if row else None
+
+def get_fixed_max(gid: int) -> int | None:
+    with db() as conn:
+        row = conn.execute("SELECT giveaway_fixed_max FROM guild_state WHERE guild_id=?", (gid,)).fetchone()
+        return row["giveaway_fixed_max"] if row else None
+
 
 def _touch_user(conn, gid: int, uid: int, correct=0, wrong=0, streak_best=None, add_badge=False):
     now = datetime.utcnow().isoformat()
@@ -871,9 +878,11 @@ class FunCounting(commands.Cog):
                     giveaway_prize=?,
                     giveaway_mode='fixed',
                     giveaway_open=1,
-                    winner_user_id=NULL
+                    winner_user_id=NULL,
+                    giveaway_fixed_max=?
                 WHERE guild_id=?
-            """, (lucky_abs, prize, interaction.guild_id))
+            """, (lucky_number, prize, number, interaction.guild_id))
+
 
     
         await interaction.response.send_message(
