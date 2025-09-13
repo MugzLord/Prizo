@@ -361,11 +361,14 @@ async def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached
                 WHERE guild_id=? AND n>? AND n<=?
             """,(gid, last_n, reached_n)).fetchall()
             pool = [r["user_id"] for r in rows]
+            
+            # 🔧 Fallback: if we hit the target but the pool came back empty, use the author.
+            # This prevents the "0 steps, no winner" edge case.
             if not pool:
-                _roll_next_target_after(conn, gid, reached_n)
-                conn.execute("UPDATE guild_state SET last_giveaway_n=? WHERE guild_id=?", (reached_n, gid))
-                return False
+                pool = [message.author.id]
+            
             chosen_winner_id = random.choice(pool)
+
 
     # ----- phase 2: single-winner lock (transaction) -----
     # Only ONE process should pass this insert; others will see UNIQUE constraint and bail.
