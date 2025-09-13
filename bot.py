@@ -121,51 +121,7 @@ def init_db():
             conn.execute("ALTER TABLE guild_state ADD COLUMN ticket_staff_role_id INTEGER")
 
 
-# ========= Views (Ticket Buttons) =========
-class OpenTicketPersistent(discord.ui.View):
-    """Persistent button; survives restarts. Only winner may click."""
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="🎫 Open Ticket", style=discord.ButtonStyle.green, custom_id="prizo_open_ticket")
-    async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.message.embeds:
-            return await interaction.response.send_message("No prize info found on this message.", ephemeral=True)
-        emb = interaction.message.embeds[0]
-        desc = (emb.description or "")
-
-        # Parse winner and number from the announce embed
-        m_user = re.search(r"Winner:\s*<@(\d+)>", desc)
-        m_num  = re.search(r"(?:Target:?|Number)\s*\*{2}(\d+)\*{2}", desc)
-        if not (m_user and m_num):
-            return await interaction.response.send_message("Couldn't read winner/number from this message.", ephemeral=True)
-
-        winner_id = int(m_user.group(1))
-        n_hit     = int(m_num.group(1))
-        if interaction.user.id != winner_id:
-            return await interaction.response.send_message("Only the winner can open this ticket.", ephemeral=True)
-
-        # Get prize text if present
-        m_prize = re.search(r"Winner:\s*<@\d+>\s*—\s*(.+?)\s", desc)
-        prize = (m_prize.group(1).strip() if m_prize else "🎁 Surprise Gift")
-
-        try:
-            chan = await create_winner_ticket(interaction.guild, interaction.user, prize, n_hit)
-        except discord.Forbidden:
-            return await interaction.response.send_message("I need **Manage Channels** permission to create tickets.", ephemeral=True)
-        except Exception as e:
-            return await interaction.response.send_message(f"Ticket creation failed: {e}", ephemeral=True)
-
-        # Disable this button on the message for everyone
-        try:
-            button.disabled = True
-            await interaction.message.edit(view=self)
-        except Exception:
-            pass
-
-        await interaction.response.send_message(f"✅ Ticket created: {chan.mention}", ephemeral=True)
-
-
+# ========= Helpers =========
 def get_state(gid: int):
     with db() as conn:
         row = conn.execute("SELECT * FROM guild_state WHERE guild_id=?", (gid,)).fetchone()
@@ -223,6 +179,88 @@ def get_ticket_cfg(gid: int) -> tuple[int | None, int | None]:
         if not row:
             return None, None
         return row["ticket_category_id"], row["ticket_staff_role_id"]
+
+# ========= Views (Ticket Buttons) =========
+class OpenTicketPersistent(discord.ui.View):
+    """Persistent button; survives restarts. Only winner may click."""
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🎫 Open Ticket", style=discord.ButtonStyle.green, custom_id="prizo_open_ticket")
+    async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.message.embeds:
+            return await interaction.response.send_message("No prize info found on this message.", ephemeral=True)
+        emb = interaction.message.embeds[0]
+        desc = (emb.description or "")
+
+        # Parse winner and number from the announce embed
+        m_user = re.search(r"Winner:\s*<@(\d+)>", desc)
+        m_num  = re.search(r"(?:Target:?|Number)\s*\*{2}(\d+)\*{2}", desc)
+        if not (m_user and m_num):
+            return await interaction.response.send_message("Couldn't read winner/number from this message.", ephemeral=True)
+
+        winner_id = int(m_user.group(1))
+        n_hit     = int(m_num.group(1))
+        if interaction.user.id != winner_id:
+            return await interaction.response.send_message("Only the winner can open this ticket.", ephemeral=True)
+
+        # Get prize text if present
+        m_prize = re.search(r"Winner:\s*<@\d+>\s*—\s*(.+?)\s", desc)
+        prize = (m_prize.group(1).strip() if m_prize else "🎁 Surprise Gift")
+
+        # ---- Permission preflight (category overrides can block creation) ----
+        cat_id, _ = get_ticket_cfg(interaction.guild_id)
+        cat = interaction.guild.get_channel(cat_id) if cat_id else None
+        me = interaction.guild.me
+        can_manage = False
+        if cat:
+            perms = cat.permissions_for(me)
+            can_manage = perms.manage_channels and perms.view_channel
+        else:
+            perms = me.guild_permissions
+            can_manage = perms.manage_channels and perms.view_channel
+
+        if not can_manage:
+            # Graceful fallback: send configured ticket URL if present
+            turl = get_ticket_url(interaction.guild_id)
+            if turl:
+                view = discord.ui.View()
+                view.add_item(discord.ui.Button(label="🎫 Open Ticket (Link)", url=turl))
+                return await interaction.response.send_message(
+                    "I don't have **Manage Channels** for that category. Use the link below:",
+                    view=view, ephemeral=True
+                )
+            return await interaction.response.send_message(
+                "I need **Manage Channels** permission on the target category to create tickets. "
+                "Ask an admin to allow it or set `/set_ticket` as a fallback link.",
+                ephemeral=True
+            )
+
+        # Try to create the ticket channel
+        try:
+            chan = await create_winner_ticket(interaction.guild, interaction.user, prize, n_hit)
+        except discord.Forbidden:
+            # Fallback to link if available
+            turl = get_ticket_url(interaction.guild_id)
+            if turl:
+                view = discord.ui.View()
+                view.add_item(discord.ui.Button(label="🎫 Open Ticket (Link)", url=turl))
+                return await interaction.response.send_message(
+                    "I couldn't create a channel due to permissions. Use the link below:",
+                    view=view, ephemeral=True
+                )
+            return await interaction.response.send_message("I need **Manage Channels** permission to create tickets.", ephemeral=True)
+        except Exception as e:
+            return await interaction.response.send_message(f"Ticket creation failed: {e}", ephemeral=True)
+
+        # Disable this button on the message for everyone
+        try:
+            button.disabled = True
+            await interaction.message.edit(view=self)
+        except Exception:
+            pass
+
+        await interaction.response.send_message(f"✅ Ticket created: {chan.mention}", ephemeral=True)
 
 async def create_winner_ticket(
     guild: discord.Guild,
@@ -426,7 +464,6 @@ def _roll_next_target_after(conn, guild_id: int, current_number: int):
         (target, guild_id)
     )
 
-
 def ensure_giveaway_target(gid: int):
     """Only re-arm if target is missing or already passed."""
     with db() as conn:
@@ -461,18 +498,8 @@ async def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached
 
         prize = st["giveaway_prize"] or "🎁 Surprise Gift"
 
-        if mode == "fixed":
-            chosen_winner_id = message.author.id
-        else:
-            last_n = st["last_giveaway_n"] or 0
-            rows = conn.execute("""
-                SELECT DISTINCT user_id FROM count_log
-                WHERE guild_id=? AND n>? AND n<=?
-            """,(gid, last_n, reached_n)).fetchall()
-            pool = [r["user_id"] for r in rows]
-            if not pool:
-                pool = [message.author.id]
-            chosen_winner_id = random.choice(pool)
+        # ✅ Winner is ALWAYS the author who hit the target (both modes)
+        chosen_winner_id = message.author.id
 
     # ----- phase 2: single-winner lock (transaction) -----
     with db() as conn:
@@ -523,7 +550,7 @@ async def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached
     view = OpenTicketPersistent()
     await message.channel.send(embed=embed, view=view)
 
-    # Optional DM
+    # Optional DM to winner
     try:
         winner_user = message.guild.get_member(chosen_winner_id) or await bot.fetch_user(chosen_winner_id)
         await winner_user.send(
@@ -784,8 +811,8 @@ class FunCounting(commands.Cog):
 
     # Giveaways (random config)
     @app_commands.command(name="giveaway_config", description="Set random giveaway range and prize label.")
-    @app_commands.describe(range_min="Min steps until a hidden giveaway (default 10)",
-                           range_max="Max steps (default 120)",
+    @app_commands.describe(range_min="Min steps until a hidden giveaway (e.g. 1)",
+                           range_max="Max steps (e.g. 6)",
                            prize="Prize label, e.g. '💎 1000 VU Credits'")
     @app_commands.guild_only()
     async def giveaway_config(self, interaction: discord.Interaction,
@@ -793,8 +820,9 @@ class FunCounting(commands.Cog):
                               prize: str = "💎 1000 VU Credits"):
         if not interaction.user.guild_permissions.manage_guild:
             return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
-        if range_min < 5: range_min = 5
-        if range_max <= range_min: range_max = range_min + 1
+        # ✅ allow exact 1..N ranges
+        if range_min < 1: range_min = 1
+        if range_max < range_min: range_max = range_min
         with db() as conn:
             conn.execute("INSERT OR IGNORE INTO guild_state (guild_id) VALUES (?)", (interaction.guild_id,))
             conn.execute("""
@@ -940,6 +968,37 @@ class FunCounting(commands.Cog):
         global BANTER
         BANTER = load_banter()
         await interaction.response.send_message("✅ Banter reloaded.", ephemeral=True)
+
+    @app_commands.command(name="ticket_diag", description="Show Prizo's effective permissions in the ticket category.")
+    @app_commands.guild_only()
+    async def ticket_diag(self, interaction: discord.Interaction):
+        st = get_state(interaction.guild_id)
+        cat_id = st["ticket_category_id"]
+        cat = interaction.guild.get_channel(cat_id) if cat_id else None
+
+        me = interaction.guild.me
+        g = me.guild_permissions
+        lines = [
+            f"Guild perms: manage_channels={g.manage_channels}, view_channel={g.view_channel}, send_messages={g.send_messages}"
+        ]
+
+        if not cat:
+            lines.append("No ticket category set or I can't see it. Use /set_ticket_category.")
+            return await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+        p = cat.permissions_for(me)
+        lines.append(f"Category perms ({cat.name}): manage_channels={p.manage_channels}, view_channel={p.view_channel}, send_messages={p.send_messages}")
+
+        try:
+            tmp = await interaction.guild.create_text_channel(name="prizo-perm-test", category=cat, reason="diagnostic")
+            await tmp.delete(reason="diagnostic cleanup")
+            lines.append("Create/delete test: ✅ success")
+        except discord.Forbidden:
+            lines.append("Create/delete test: ❌ FORBIDDEN (missing Manage Channels or category override)")
+        except Exception as e:
+            lines.append(f"Create/delete test: ❌ {type(e).__name__}: {e}")
+
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
     @app_commands.command(name="sync", description="Force re-sync slash commands (admin).")
     @app_commands.guild_only()
