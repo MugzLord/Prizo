@@ -12,10 +12,6 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-import os
-if os.getenv("DISABLE_BOT") == "true":
-    print("Prizo disabled by environment variable.")
-    exit()
 
 # ========= Basics =========
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -549,6 +545,38 @@ async def on_message(message: discord.Message):
     with contextlib.suppress(Exception):
         log_correct_count(message.guild.id, expected, message.author.id)
 
+        # >>> LUCKY NUMBER WINNER (first to hit target wins this round) <<<
+    row_now = get_state(message.guild.id)  # fresh state
+    if (
+        row_now
+        and row_now.get("giveaway_mode") == "fixed"
+        and row_now.get("giveaway_open") == 1
+        and row_now.get("giveaway_target") is not None
+        and expected == int(row_now["giveaway_target"])   # <-- they just hit it
+    ):
+        # Atomically claim so two simultaneous messages can't both win
+        with db() as conn:
+            cur = conn.execute("""
+                UPDATE guild_state
+                SET winner_user_id=?, giveaway_open=0
+                WHERE guild_id=?
+                  AND giveaway_open=1
+                  AND (winner_user_id IS NULL OR winner_user_id=0)
+            """, (message.author.id, message.guild.id))
+            claimed = cur.rowcount
+
+        if claimed:
+            prize = row_now.get("giveaway_prize") or ""
+            await message.channel.send(
+                f"🎯 Lucky number **{expected}**! {message.author.mention} wins {prize} 🎁"
+            )
+            with contextlib.suppress(Exception):
+                await message.author.send(
+                    f"🎉 You hit the lucky number **{expected}** in **{message.guild.name}** and won {prize}!"
+                )
+            return  # stop here: no further giveaway logic this message
+
+    
     # milestones
     if expected in MILESTONES:
         em = discord.Embed(
@@ -575,9 +603,14 @@ async def on_message(message: discord.Message):
             _touch_user(conn, message.guild.id, message.author.id, correct=0, wrong=0,
                         streak_best=get_state(message.guild.id)["guild_streak"], add_badge=True)
 
-    # hidden giveaway (supports random or fixed)
-    ensure_giveaway_target(message.guild.id)              # <-- no re-arm on equality anymore
-    await try_giveaway_draw(bot, message, expected)       # <-- NOW awaited so it actually runs
+    # hidden giveaway
+    ensure_giveaway_target(message.guild.id)
+
+    # Only run the old random draw when NOT in 'fixed' (lucky-number) mode
+    st2 = get_state(message.guild.id)
+    if not (st2 and st2.get("giveaway_mode") == "fixed"):
+        await try_giveaway_draw(bot, message, expected)
+
 
 # ========= Slash Commands =========
 class FunCounting(commands.Cog):
@@ -752,28 +785,38 @@ class FunCounting(commands.Cog):
         else:
             await interaction.response.send_message(embed=em, ephemeral=False)
 
-    # NEW: Fixed-number mode ON
-    @app_commands.command(name="giveaway_fixed", description="Set a fixed winning number (the typer of that number wins).")
-    @app_commands.describe(number="Exact number that wins (e.g., 56)",
-                           prize="Prize label, e.g. '💎 500 VU Credits'")
+    # /giveaway_fixed — arm a round with a secret lucky number in [1, number]
     @app_commands.guild_only()
     async def giveaway_fixed(self, interaction: discord.Interaction, number: int, prize: str = "💎 500 VU Credits"):
         if not interaction.user.guild_permissions.manage_guild:
-            return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
-        if number < 1:
-            return await interaction.response.send_message("Number must be **≥ 1**.", ephemeral=True)
-
+            return await interaction.response.send_message(
+                "You need **Manage Server** permission.", ephemeral=True
+            )
+    
+        if number < 2:
+            return await interaction.response.send_message(
+                "Number must be **≥ 2**.", ephemeral=True
+            )
+    
+        lucky_number = random.randint(1, number)  # SECRET lucky number for this round
+    
         with db() as conn:
             conn.execute("""
                 UPDATE guild_state
-                SET giveaway_target=?, giveaway_prize=?, giveaway_mode='fixed'
+                SET giveaway_target=?,
+                    giveaway_prize=?,
+                    giveaway_mode='fixed',
+                    giveaway_open=1,
+                    winner_user_id=NULL
                 WHERE guild_id=?
-            """, (number, prize, interaction.guild_id))
+            """, (lucky_number, prize, interaction.guild_id))
+    
         await interaction.response.send_message(
-            f"🎯 Fixed milestone armed: **{number}** → prize **{prize}**.\n"
-            f"➡️ Whoever types **{number}** correctly will win.",
+            f"🎲 Lucky number armed **1–{number}**.\n"
+            f"First to hit it wins **{prize}**.",
             ephemeral=True
         )
+
 
     # NEW: Fixed-number mode OFF (return to random)
     @app_commands.command(name="giveaway_fixed_off", description="Disable fixed-number prize and return to random mode.")
