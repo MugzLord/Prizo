@@ -577,14 +577,21 @@ async def on_message(message: discord.Message):
             view = discord.ui.View()
             view.add_item(discord.ui.Button(label="🎫 Open Ticket", url=ticket_url))
 
-        await message.channel.send(
-            f"🎯 Jackpot! Number **{posted}** hit!\n"
-            f"Winner: {message.author.mention} — {prize} 🥳\n"
-            f"{banter}\n"
-            f"{claim_text}\n"
-            f"{note}",
-            view=view
+        embed = discord.Embed(
+            title="🎯 Jackpot Hit!",
+            description=(
+                f"Number **{posted}** smashed!\n\n"
+                f"**Winner:** {message.author.mention} — {prize} 🥳\n\n"
+                f"{banter}\n"
+                f"{claim_text}\n\n"
+                f"*New jackpot is armed… keep counting.*"
+            ),
+            colour=discord.Colour.gold()
         )
+        embed.set_footer(text=f"{message.guild.name} • Jackpot Announcement")
+
+        await message.channel.send(embed=embed, view=view)
+
 
         with contextlib.suppress(Exception):
             await message.author.send(
