@@ -1078,35 +1078,42 @@ class FunCounting(commands.Cog):
     
     @bot.tree.command(name="tournament_start", description="Start a Prizo tournament")
     @app_commands.describe(
-        duration_minutes="How long it runs (default 30)",
-        fixed_reward="Fixed reward amount per hit (default 1000)",
-        max_jackpots="Max counted jackpots during tournament (default 5)",
-        silent_after_limit="After limit, keep game but silence jackpot announces (default true)"
+        duration="How long it runs (minutes, default 30)",
+        reward="Fixed reward amount per hit (default 1000)",
+        cap="Max jackpots counted (default 5)",
+        silent="Silent after cap (true/false, default true)"
     )
-    async def tournament_start(interaction: discord.Interaction,
-                               duration_minutes: int = 30,
-                               fixed_reward: int = 1000,
-                               max_jackpots: int = 5,
-                               silent_after_limit: bool = True):
-        if not admin_check(interaction):
-            return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
+    async def tournament_start(
+        interaction: discord.Interaction,
+        duration: int = 30,
+        reward: int = 1000,
+        cap: int = 5,
+        silent: bool = True
+    ):
+        if not interaction.user.guild_permissions.manage_guild:
+            return await interaction.response.send_message(
+                "You need **Manage Server** permission.", ephemeral=True
+            )
+    
         g = interaction.guild
-        ends_at = now_utc() + timedelta(minutes=max(1, duration_minutes))
-        # activate/reset
-        set_tourney(g.id,
+        ends_at = now_utc() + timedelta(minutes=max(1, duration))
+        set_tourney(
+            g.id,
             is_active=1,
             ends_at_utc=iso(ends_at),
-            fixed_reward=max(1, fixed_reward),
-            max_jackpots=max(1, max_jackpots),
+            fixed_reward=max(1, reward),
+            max_jackpots=max(1, cap),
             jackpots_hit=0,
-            silent_after_limit=1 if silent_after_limit else 0
+            silent_after_limit=1 if silent else 0,
         )
         reset_tourney_wins(g.id)
+    
         await interaction.response.send_message(
             f"🏁 **Prizo Tournament started!**\n"
-            f"Duration: **{duration_minutes}m** • Reward: **{fixed_reward}** • Cap: **{max_jackpots}** jackpots\n"
-            f"_Jackpots after cap will be {'silent' if silent_after_limit else 'announced'}._"
+            f"Duration: **{duration}m** • Reward: **{reward}** • Cap: **{cap} jackpots**\n"
+            f"_Jackpots after cap will be {'silent' if silent else 'announced'}._"
         )
+
     
     @bot.tree.command(name="tournament_end", description="End the current Prizo tournament now")
     async def tournament_end(interaction: discord.Interaction):
