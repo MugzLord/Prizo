@@ -119,6 +119,33 @@ def init_db():
             conn.execute("ALTER TABLE guild_state ADD COLUMN ticket_category_id INTEGER")
         with contextlib.suppress(Exception):
             conn.execute("ALTER TABLE guild_state ADD COLUMN ticket_staff_role_id INTEGER")
+            
+#tournament mode
+def init_db():
+    with db() as con:
+        cur = con.cursor()
+        # Per-guild tournament state
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS tournaments(
+            guild_id     INTEGER PRIMARY KEY,
+            is_active    INTEGER NOT NULL DEFAULT 0,
+            ends_at_utc  TEXT,                    -- ISO string
+            fixed_reward INTEGER NOT NULL DEFAULT 1000,
+            max_jackpots INTEGER NOT NULL DEFAULT 5,
+            jackpots_hit INTEGER NOT NULL DEFAULT 0,
+            silent_after_limit INTEGER NOT NULL DEFAULT 1
+        );
+        """)
+        # Per-guild, per-user tournament wins
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS tournament_wins(
+            guild_id INTEGER NOT NULL,
+            user_id  INTEGER NOT NULL,
+            wins     INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (guild_id, user_id)
+        );
+        """)
+        con.commit()
 
 
 # ========= Helpers =========
@@ -728,9 +755,29 @@ async def on_message(message: discord.Message):
     target_now = st_now["giveaway_target"]
     if target_now is not None and expected == int(target_now):
         did_announce = await try_giveaway_draw(bot, message, expected)
+    
+        # Tournament hook (added)
+        is_active, ends_at, fixed_reward, max_jp, jp_hit, silent = get_tourney(message.guild.id)
+        if is_active and parse_iso(ends_at) and now_utc() < parse_iso(ends_at):
+            if jp_hit < max_jp:
+                add_tourney_win(message.guild.id, message.author.id, 1)
+                set_tourney(message.guild.id, jackpots_hit=jp_hit + 1)
+                await message.channel.send(
+                    f"🏁 Tournament win for {message.author.mention}! (+1) • {fixed_reward} creds"
+                )
+            elif not silent:
+                await message.channel.send(
+                    f"{message.author.mention} hit another jackpot, "
+                    f"but the tournament cap of {max_jp} is already reached!"
+                )
+    
+        # your existing 10-minute ban logic stays here
+        ban_until = datetime.utcnow() + timedelta(minutes=10)
+        set_ban_number(message.guild.id, expected, ban_until)
+    
         if did_announce:
             return
-
+    
 
 # ========= Slash Commands =========
 class FunCounting(commands.Cog):
@@ -1026,6 +1073,70 @@ class FunCounting(commands.Cog):
             return await interaction.response.send_message(f"Resynced {len(synced)} commands to this server.", ephemeral=True)
         await interaction.response.send_message("Sync failed.", ephemeral=True)
 
+    def admin_check(interaction: discord.Interaction) -> bool:
+        return interaction.user.guild_permissions.manage_guild
+    
+    @bot.tree.command(name="tournament_start", description="Start a Prizo tournament")
+    @app_commands.describe(
+        duration_minutes="How long it runs (default 30)",
+        fixed_reward="Fixed reward amount per hit (default 1000)",
+        max_jackpots="Max counted jackpots during tournament (default 5)",
+        silent_after_limit="After limit, keep game but silence jackpot announces (default true)"
+    )
+    async def tournament_start(interaction: discord.Interaction,
+                               duration_minutes: int = 30,
+                               fixed_reward: int = 1000,
+                               max_jackpots: int = 5,
+                               silent_after_limit: bool = True):
+        if not admin_check(interaction):
+            return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
+        g = interaction.guild
+        ends_at = now_utc() + timedelta(minutes=max(1, duration_minutes))
+        # activate/reset
+        set_tourney(g.id,
+            is_active=1,
+            ends_at_utc=iso(ends_at),
+            fixed_reward=max(1, fixed_reward),
+            max_jackpots=max(1, max_jackpots),
+            jackpots_hit=0,
+            silent_after_limit=1 if silent_after_limit else 0
+        )
+        reset_tourney_wins(g.id)
+        await interaction.response.send_message(
+            f"🏁 **Prizo Tournament started!**\n"
+            f"Duration: **{duration_minutes}m** • Reward: **{fixed_reward}** • Cap: **{max_jackpots}** jackpots\n"
+            f"_Jackpots after cap will be {'silent' if silent_after_limit else 'announced'}._"
+        )
+    
+    @bot.tree.command(name="tournament_end", description="End the current Prizo tournament now")
+    async def tournament_end(interaction: discord.Interaction):
+        if not admin_check(interaction):
+            return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
+        g = interaction.guild
+        set_tourney(g.id, is_active=0, ends_at_utc=None)
+        winners = top_wins(g.id, 10)
+        lines = []
+        medal = ["🥇","🥈","🥉"]
+        for i,(uid,w) in enumerate(winners):
+            tag = medal[i] if i < 3 else f"{i+1}."
+            lines.append(f"{tag} <@{uid}> — {w} win(s)")
+        summary = "\n".join(lines) if lines else "_No winners logged._"
+        await interaction.response.send_message(f"🏁 **Prizo Tournament** ended early.\n{summary}")
+    
+    @bot.tree.command(name="tournament_status", description="Show current tournament status")
+    async def tournament_status(interaction: discord.Interaction):
+        g = interaction.guild
+        is_active, ends_at, fixed_reward, max_jp, jp_hit, silent = get_tourney(g.id)
+        if not is_active:
+            return await interaction.response.send_message("No tournament is active.", ephemeral=True)
+        end_dt = parse_iso(ends_at)
+        remaining = (end_dt - now_utc()) if end_dt else timedelta(0)
+        mins = max(0, int(remaining.total_seconds() // 60))
+        await interaction.response.send_message(
+            f"🏁 Tournament active — ends in **~{mins}m**\n"
+            f"Reward: **{fixed_reward}** • Cap: **{jp_hit}/{max_jp}** • After cap: **{'silent' if silent else 'announce'}**."
+        )
+     
 async def setup_cog():
     await bot.add_cog(FunCounting(bot))
 
