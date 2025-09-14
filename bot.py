@@ -136,6 +136,17 @@ def init_db():
             PRIMARY KEY (guild_id, user_id)
         );
         """)
+        
+        # --- Add ban_minutes if missing (safe one-time migration) ---
+        try:
+            # check existing columns
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(guild_state);").fetchall()]
+            if "ban_minutes" not in cols:
+                conn.execute("ALTER TABLE guild_state ADD COLUMN ban_minutes INTEGER NOT NULL DEFAULT 10;")
+                conn.execute("UPDATE guild_state SET ban_minutes=10 WHERE ban_minutes IS NULL;")
+        except Exception:
+            pass  # ignore if already added
+
 
 # ========= Helpers =========
 def get_state(gid: int):
