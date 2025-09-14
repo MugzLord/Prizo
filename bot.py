@@ -1,5 +1,5 @@
 # bot.py — Prizo (multi-server, no themes, single settings command) + FIXED-NUMBER GIVEAWAY
-1 import os
+import os
 import re
 import json
 import math
