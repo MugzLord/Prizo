@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 import discord
 from discord import app_commands
 from discord.ext import commands
+from collections import defaultdict
+_wrong_streak = defaultdict(int)
 
 
 # ========= Basics =========
@@ -719,23 +721,16 @@ async def on_message(message: discord.Message):
         else:
             del locks[message.author.id]
 
-    # --- consecutive 3-in-a-row tracking (by author) ---
+    # --- WRONG GUESS STREAK: bench after 3 wrong numeric guesses in a row ---
+    # (We track per (guild, channel, user) to avoid cross-channel noise)
+    # NOTE: streak is incremented only on wrong numeric guesses (see below).
+    # Here, just ensure last poster tracker doesn't bench people anymore:
     if lp["user_id"] == message.author.id:
         lp["count"] += 1
     else:
         lp["user_id"] = message.author.id
         lp["count"] = 1
-    if lp["count"] >= 3:
-        locks[message.author.id] = now + timedelta(minutes=10)
-        roast = pick_banter("roast") or "Greedy digits get locked, enjoy the bench. 🏀"
-        with contextlib.suppress(Exception):
-            await safe_react(message, "⛔")
-            await message.reply(
-                f"⛔ {message.author.mention} tried **3 in a row**. Locked for **10 minutes**. {roast}"
-            )
-        lp["user_id"] = None
-        lp["count"] = 0
-        return
+    # No bench here; wrong-guess streak handling happens in the wrong-number branch.
 
     # --- rule: no double posts ---
     if last_user == message.author.id:
@@ -751,15 +746,42 @@ async def on_message(message: discord.Message):
     # --- rule: must be exact next number ---
     if posted != expected:
         mark_wrong(message.guild.id, message.author.id)
+
+        # increment WRONG-GUESS streak for this (guild, channel, user)
+        key = (message.guild.id, message.channel.id, message.author.id)
+        _wrong_streak[key] += 1
+
+        # fetch bench duration from settings (default 10)
+        st_bench = get_state(message.guild.id)
+        ban_minutes = int(st_bench["ban_minutes"] if "ban_minutes" in st_bench.keys() and st_bench["ban_minutes"] is not None else 10)
+
+        if _wrong_streak[key] >= 3:
+            _wrong_streak[key] = 0
+            locks[message.author.id] = now + timedelta(minutes=ban_minutes)
+            roast = pick_banter("roast") or "Have a sit-down and count sheep, not numbers. 🛋️"
+            with contextlib.suppress(Exception):
+                await safe_react(message, "⛔")
+                await message.reply(
+                    f"🚫 {message.author.mention} three wrong on the trot — benched for **{ban_minutes} minutes**. {roast}"
+                )
+            # also clear last-poster to avoid accidental follow-ups counting
+            lp["user_id"] = None
+            lp["count"] = 0
+            return
+
         await safe_react(message, "❌")
         banter = pick_banter("wrong") or "Oof—maths says ‘nah’. 📏"
         with contextlib.suppress(Exception):
             await message.reply(f"{banter} Next up is **{expected}**.")
         return
 
+
     # --- success! ---
     bump_ok(message.guild.id, message.author.id)
     await safe_react(message, "✅")
+    # reset wrong-guess streak on correct hit
+    _wrong_streak[(message.guild.id, message.channel.id, message.author.id)] = 0
+
 
     # log for giveaway eligibility
     with contextlib.suppress(Exception):
@@ -815,19 +837,17 @@ async def on_message(message: discord.Message):
                     f"but the tournament cap of {max_jp} is already reached!"
                 )
     
-        # bench the winner (player lock) for 10 minutes; jackpots continue as normal
-        locks = bot.locked_players.setdefault(message.guild.id, {})
-        locks[message.author.id] = datetime.utcnow() + timedelta(minutes=10)
+        # jackpot win – no bench here
         with contextlib.suppress(Exception):
-            await safe_react(message, "⛔")
-            await message.channel.send(
-                f"⛔ {message.author.mention} bagged the jackpot and is benched for **10 minutes**. Let someone else take a swing."
-            )
+            await safe_react(message, "🎉")
+        await message.channel.send(
+            f"🎉 {message.author.mention} bagged the jackpot! New jackpot is armed… keep counting."
+        )
+
     
         if did_announce:
             return
     
-
 # ========= Slash Commands =========
 class FunCounting(commands.Cog):
     def __init__(self, b: commands.Bot):
