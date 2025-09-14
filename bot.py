@@ -975,7 +975,30 @@ class FunCounting(commands.Cog):
             f"🎰 Giveaway armed. Range **{range_min}–{range_max}** • Prize: **{prize}** (target is secret).",
             ephemeral=True
         )
+    #banned
+    @app_commands.command(
+        name="set_ban_minutes",
+        description="Set bench duration (minutes) after 3 wrong guesses in a row."
+    )
+    @app_commands.describe(minutes="Bench duration in minutes (default 10)")
+    @app_commands.guild_only()
+    async def set_ban_minutes(self, interaction: discord.Interaction, minutes: app_commands.Range[int, 1, 1440]):
+        if not interaction.user.guild_permissions.manage_guild:
+            return await interaction.response.send_message(
+                "You need **Manage Server** permission.", ephemeral=True
+            )
+        with db() as conn:
+            conn.execute(
+                "UPDATE guild_state SET ban_minutes=? WHERE guild_id=?",
+                (int(minutes), interaction.guild_id)
+            )
+        await interaction.response.send_message(
+            f"✅ Bench duration set to **{int(minutes)} minutes**.",
+            ephemeral=True
+        )
 
+
+    
     @app_commands.command(name="set_ticket", description="Set the server ticket link for prize claims (fallback).")
     @app_commands.guild_only()
     async def set_ticket(self, interaction: discord.Interaction, url: str):
