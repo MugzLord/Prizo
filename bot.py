@@ -7,7 +7,7 @@ import random
 import sqlite3
 import contextlib
 from datetime import datetime, timedelta, timezone
-
+from discord.ext import tasks
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -26,6 +26,22 @@ INTENTS.guilds = True
 INTENTS.members = True
 
 bot = commands.Bot(command_prefix="!", intents=INTENTS)
+#AI Helper
+# PATCH: wrong-entry tracking (per guild)
+wrong_entries = defaultdict(int)
+
+# PATCH: AI banter config/state (per guild)
+AI_DEFAULT_IDLE_MIN = 3
+AI_MAX_REPLIES_PER_BANTER = 2      # how many AI clapbacks after one idle banter
+AI_REPLY_COOLDOWN_SEC = 5          # throttle between AI replies
+
+ai_helper_enabled     = defaultdict(lambda: True)
+ai_idle_minutes       = defaultdict(lambda: AI_DEFAULT_IDLE_MIN)
+last_count_activity   = defaultdict(lambda: datetime.now(timezone.utc))
+last_ai_message       = defaultdict(lambda: None)
+ai_reply_counts       = defaultdict(int)
+ai_reply_next_allowed = defaultdict(lambda: datetime.now(timezone.utc))
+#end of ai additional
 
 # ========= Storage =========
 DB_PATH = os.getenv("DB_PATH", "counting_fun.db")
@@ -263,6 +279,52 @@ def top_wins(guild_id: int, limit: int = 10):
             SELECT user_id, wins FROM tournament_wins
             WHERE guild_id=? ORDER BY wins DESC, user_id ASC LIMIT ?
         """, (guild_id, limit)).fetchall()
+        
+#this is for AI helper
+# PATCH: background task to drop banter when quiet
+@tasks.loop(seconds=30)
+async def ai_banter_watchdog():
+    now = datetime.now(timezone.utc)
+    for guild in bot.guilds:
+        gid = guild.id
+        if not ai_helper_enabled[gid]:
+            continue
+
+        # If you have a game pause/tournament-only guard, put it here:
+        # if game_paused.get(gid): continue
+
+        idle_for = now - last_count_activity[gid]
+        if idle_for < timedelta(minutes=ai_idle_minutes[gid]):
+            continue
+
+        try:
+            # PATCH: get counting channel from your DB state (no extra globals)
+            st_watch = get_state(gid)
+            counting_channel_id = st_watch["channel_id"]
+            if not counting_channel_id:
+                continue
+
+            channel = guild.get_channel(counting_channel_id)
+            if not channel:
+                continue
+
+            # PATCH: pull from BANTER (your loaded JSON), not undefined var
+            line = random.choice(BANTER.get("idle_banter", ["…silence…"]))
+
+            msg = await channel.send(f"🤖 {line}")
+
+            # Track last AI post so players can reply to it
+            last_ai_message[gid] = msg.id
+            ai_reply_counts[gid] = 0
+            ai_reply_next_allowed[gid] = now + timedelta(seconds=2)
+
+            # Reset idle timer so we don’t spam
+            last_count_activity[gid] = now
+
+        except Exception as e:
+            print(f"[AI banter] guild {gid} error: {e}")
+
+#end of ai helper
 
 # ========= Views (Ticket Buttons) =========
 class OpenTicketPersistent(discord.ui.View):
@@ -685,6 +747,10 @@ async def on_ready():
     print(f"Logged in as {bot.user} ({bot.user.id})")
     print("DB_PATH:", DB_PATH)
 
+    # PATCH: start AI banter loop
+    if not ai_banter_watchdog.is_running():
+        ai_banter_watchdog.start()
+
 @bot.event
 async def on_guild_join(guild: discord.Guild):
     with contextlib.suppress(Exception):
@@ -700,6 +766,26 @@ async def on_message(message: discord.Message):
     if not st["channel_id"] or message.channel.id != st["channel_id"]:
         return
 
+#ai starts
+    # PATCH: refresh idle timer as soon as something happens in counting channel
+    gid = message.guild.id
+    last_count_activity[gid] = datetime.now(timezone.utc)
+
+    # PATCH: allow replies to the last AI banter only (keeps channel numbers-only otherwise)
+    if message.reference and message.reference.message_id == last_ai_message[gid]:
+        if not message.author.bot:
+            now = datetime.now(timezone.utc)
+            # optional: guard tournament/pause here if you have flags
+            if ai_reply_counts[gid] < AI_MAX_REPLIES_PER_BANTER and now >= ai_reply_next_allowed[gid]:
+                reply_pool = BANTER.get("idle_banter_replies", BANTER.get("idle_banter", ["Alright, back to counting."]))
+                line = random.choice(reply_pool)
+                with contextlib.suppress(Exception):
+                    await message.channel.send(f"🤖 {line}", reference=message)
+                ai_reply_counts[gid] += 1
+                ai_reply_next_allowed[gid] = now + timedelta(seconds=AI_REPLY_COOLDOWN_SEC)
+            last_count_activity[gid] = now
+        return  # do NOT treat as a counting attempt
+    
     # numbers-only extract (or loose: number must be at start)
     INT_STRICT = re.compile(r"^\s*(-?\d+)\s*$")
     INT_LOOSE  = re.compile(r"^\s*(-?\d+)\b")
@@ -762,6 +848,17 @@ async def on_message(message: discord.Message):
         key = (message.guild.id, message.channel.id, message.author.id)
         _wrong_streak[key] += 1
 
+        # PATCH: per-guild wrong entry counter (reset after 5 wrong entries)
+        wrong_entries[message.guild.id] += 1
+        if wrong_entries[message.guild.id] >= 5:
+            wrong_entries[message.guild.id] = 0
+            reset_count(message.guild.id)
+            with contextlib.suppress(Exception):
+                await message.channel.send("⚠️ Five wrong entries — counting has been reset to **1**. Keep it tidy, team.")
+            lp["user_id"] = None
+            lp["count"] = 0
+            return
+        
         # fetch bench duration from settings (default 10)
         st_bench = get_state(message.guild.id)
         ban_minutes = int(st_bench["ban_minutes"] if "ban_minutes" in st_bench.keys() and st_bench["ban_minutes"] is not None else 10)
@@ -792,7 +889,8 @@ async def on_message(message: discord.Message):
     await safe_react(message, "✅")
     # reset wrong-guess streak on correct hit
     _wrong_streak[(message.guild.id, message.channel.id, message.author.id)] = 0
-
+    # PATCH: reset guild-wide wrong counter on correct hit
+    wrong_entries[message.guild.id] = 0
 
     # log for giveaway eligibility
     with contextlib.suppress(Exception):
@@ -1007,8 +1105,6 @@ class FunCounting(commands.Cog):
             f"✅ Bench duration set to **{int(minutes)} minutes**.",
             ephemeral=True
         )
-
-
     
     @app_commands.command(name="set_ticket", description="Set the server ticket link for prize claims (fallback).")
     @app_commands.guild_only()
@@ -1239,6 +1335,26 @@ class FunCounting(commands.Cog):
             f"Reward: **{fixed_reward}** • Cap: **{jp_hit}/{max_jp}** • After cap: **{'silent' if silent else 'announce'}**."
         )
 
+    #ai
+    # PATCH: simple AI banter toggles
+    @app_commands.command(name="aibanter_on", description="Enable AI banter in counting channel.")
+    @app_commands.guild_only()
+    async def aibanter_on(self, interaction: discord.Interaction):
+        ai_helper_enabled[interaction.guild_id] = True
+        await interaction.response.send_message("✅ AI banter enabled.", ephemeral=True)
+
+    @app_commands.command(name="aibanter_off", description="Disable AI banter in counting channel.")
+    @app_commands.guild_only()
+    async def aibanter_off(self, interaction: discord.Interaction):
+        ai_helper_enabled[interaction.guild_id] = False
+        await interaction.response.send_message("✅ AI banter disabled.", ephemeral=True)
+
+    @app_commands.command(name="aibanter_idle", description="Set minutes of silence before AI speaks.")
+    @app_commands.describe(minutes="1–60")
+    @app_commands.guild_only()
+    async def aibanter_idle(self, interaction: discord.Interaction, minutes: app_commands.Range[int,1,60]):
+        ai_idle_minutes[interaction.guild_id] = int(minutes)
+        await interaction.response.send_message(f"⏱️ AI banter idle set to **{int(minutes)} min**.", ephemeral=True) 
 async def setup_cog():
     await bot.add_cog(FunCounting(bot))
 
