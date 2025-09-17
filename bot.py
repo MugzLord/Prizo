@@ -289,7 +289,7 @@ def load_banter():
             # existing categories + idle keys from JSON
             for k in (
                 "wrong", "winner", "milestone", "roast", "nonnumeric", "claim",
-                "idle_banter", "idle_banter_replies", "idle_replies"
+                "idle_banter", "idle_banter_replies"
             ):
                 data.setdefault(k, [])
             return data
@@ -300,6 +300,14 @@ def load_banter():
             "idle_banter": [], "idle_banter_replies": [], "idle_replies": []
         }
 BANTER = load_banter()
+def _banter_summary():
+    return {
+        "idle_banter": len(BANTER.get("idle_banter", [])),
+        "idle_banter_replies": len(BANTER.get("idle_banter_replies", [])),
+        "wrong": len(BANTER.get("wrong", [])),
+        "milestone": len(BANTER.get("milestone", [])),
+        "winner": len(BANTER.get("winner", [])),
+    }
 
 def pick_banter(cat: str) -> str:
     lines = BANTER.get(cat, [])
@@ -524,6 +532,9 @@ async def on_guild_join(guild: discord.Guild):
     with contextlib.suppress(Exception):
         await bot.tree.sync(guild=guild)
         print(f"Per-guild synced commands to {guild.id}")
+
+print(f"BANTER_PATH: {BANTER_PATH} • loaded {_banter_summary()}")
+
 
 @bot.event
 async def on_message(message: discord.Message):
