@@ -281,7 +281,11 @@ def top_wins(guild_id: int, limit: int = 10):
         """, (guild_id, limit)).fetchall()
         
 # ========= Fun facts / banter =========
-BANTER_PATH = os.getenv("BANTER_PATH", "banter.json")
+BANTER_PATH = os.getenv(
+    "BANTER_PATH",
+    os.path.join(os.path.dirname(__file__), "banter.json")
+)
+
 def load_banter():
     try:
         with open(BANTER_PATH, "r", encoding="utf-8") as f:
@@ -1018,9 +1022,15 @@ class FunCounting(commands.Cog):
         try:
             BANTER = load_banter()
             _idle_bucket.clear()  # reset per-guild rotation so new lines take effect
-            await interaction.followup.send("✅ Banter reloaded.", ephemeral=True)
+            await interaction.followup.send(
+                f"✅ Banter reloaded from `{BANTER_PATH}` • {_banter_summary()}",
+                ephemeral=True
+            )
         except Exception as e:
-            await interaction.followup.send(f"❌ Reload failed: {type(e).__name__}: {e}", ephemeral=True)
+            await interaction.followup.send(
+                f"❌ Reload failed: {type(e).__name__}: {e}",
+                ephemeral=True
+            )
 
     @app_commands.command(name="ticket_diag", description="Show Prizo's effective permissions in the ticket category.")
     @app_commands.guild_only()
