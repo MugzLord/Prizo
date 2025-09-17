@@ -808,13 +808,7 @@ async def on_message(message: discord.Message):
     _idle_bucket = _dd(list)
     
     def _idle_lines():
-        # Accept several possible JSON keys; prefer explicit "idle_banter"
-        return (
-            (BANTER.get("idle_banter") or
-             BANTER.get("idle") or
-             BANTER.get("idle_lines") or [])
-            or ["…silence…"]
-        )
+        return BANTER.get("idle_banter") or ["…silence…"]
     
     def _next_idle_line(gid: int) -> str:
         bucket = _idle_bucket[gid]
