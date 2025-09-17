@@ -280,262 +280,6 @@ def top_wins(guild_id: int, limit: int = 10):
             WHERE guild_id=? ORDER BY wins DESC, user_id ASC LIMIT ?
         """, (guild_id, limit)).fetchall()
         
-#this is for AI helper
-# PATCH: background task to drop banter when quiet
-@tasks.loop(seconds=30)
-async def ai_banter_watchdog():
-    now = datetime.now(timezone.utc)
-    for guild in bot.guilds:
-        gid = guild.id
-        if not ai_helper_enabled[gid]:
-            continue
-
-        # If you have a game pause/tournament-only guard, put it here:
-        # if game_paused.get(gid): continue
-
-        idle_for = now - last_count_activity[gid]
-        if idle_for < timedelta(minutes=ai_idle_minutes[gid]):
-            continue
-
-        try:
-            # PATCH: get counting channel from your DB state (no extra globals)
-            st_watch = get_state(gid)
-            counting_channel_id = st_watch["channel_id"]
-            if not counting_channel_id:
-                continue
-
-            channel = guild.get_channel(counting_channel_id)
-            if not channel:
-                continue
-
-            # PATCH: pull from BANTER (your loaded JSON), not undefined var
-            line = _next_idle_line(gid)
-
-            msg = await channel.send(f"🤖 {line}")
-
-            # Track last AI post so players can reply to it
-            last_ai_message[gid] = msg.id
-            ai_reply_counts[gid] = 0
-            ai_reply_next_allowed[gid] = now + timedelta(seconds=2)
-
-            # Reset idle timer so we don’t spam
-            last_count_activity[gid] = now
-
-        except Exception as e:
-            print(f"[AI banter] guild {gid} error: {e}")
-
-#end of ai helper
-
-# ========= Views (Ticket Buttons) =========
-class OpenTicketPersistent(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="🎫 Open Ticket", style=discord.ButtonStyle.green, custom_id="prizo_open_ticket")
-    async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # --- parse the announce embed for winner/number/prize ---
-        if not interaction.message.embeds:
-            return await interaction.response.send_message("No prize info found on this message.", ephemeral=True)
-        emb = interaction.message.embeds[0]
-        desc = (emb.description or "")
-
-        m_user = re.search(r"Winner:\s*<@(\d+)>", desc)
-        m_num  = re.search(r"(?:Target:?|Number)\s*\*{2}(\d+)\*{2}", desc)
-        if not (m_user and m_num):
-            return await interaction.response.send_message("Couldn't read winner/number from this message.", ephemeral=True)
-
-        winner_id = int(m_user.group(1))
-        n_hit     = int(m_num.group(1))
-        if interaction.user.id != winner_id:
-            return await interaction.response.send_message("Only the winner can open this ticket.", ephemeral=True)
-
-        m_prize = re.search(r"Winner:\s*<@\d+>\s*—\s*(.+?)\s", desc)
-        prize = (m_prize.group(1).strip() if m_prize else "🎁 Surprise Gift")
-
-        # --- de-dupe: if a ticket with the same name already exists, just point to it ---
-        name = f"ticket-{interaction.user.name.lower()}-{n_hit}"
-        existing = discord.utils.get(interaction.guild.text_channels, name=name)
-        if existing:
-            await interaction.response.send_message(f"✅ Ticket already exists: {existing.mention}", ephemeral=True)
-            with contextlib.suppress(Exception):
-                button.disabled = True
-                await interaction.message.edit(view=self)
-            return
-
-        # --- try to create; if forbidden, fall back to set_ticket URL ---
-        try:
-            chan = await create_winner_ticket(interaction.guild, interaction.user, prize, n_hit)
-        except discord.Forbidden:
-            turl = get_ticket_url(interaction.guild_id)
-            if turl:
-                view = discord.ui.View()
-                view.add_item(discord.ui.Button(label="🎫 Open Ticket (Link)", url=turl))
-                return await interaction.response.send_message(
-                    "I couldn’t create a channel due to category permissions. Use the link below:",
-                    view=view, ephemeral=True
-                )
-            return await interaction.response.send_message(
-                "I need **Manage Channels** permission on the ticket category to create tickets.",
-                ephemeral=True
-            )
-        except Exception as e:
-            return await interaction.response.send_message(f"Ticket creation failed: {e}", ephemeral=True)
-
-        # Success: confirm first, then try to disable button (ignore failures)
-        await interaction.response.send_message(f"✅ Ticket created: {chan.mention}", ephemeral=True)
-        with contextlib.suppress(Exception):
-            button.disabled = True
-            await interaction.message.edit(view=self)
-
-async def create_winner_ticket(
-    guild: discord.Guild,
-    winner: discord.Member,
-    prize: str,
-    n_hit: int
-) -> discord.TextChannel:
-    """Create a private ticket channel visible to winner + staff role, under configured category."""
-    cat_id, staff_role_id = get_ticket_cfg(guild.id)
-    category = guild.get_channel(cat_id) if cat_id else None
-    staff_role = guild.get_role(staff_role_id) if staff_role_id else None
-
-    # Make sure we have a full Member object
-    if not isinstance(winner, discord.Member):
-        winner = guild.get_member(winner.id) or await guild.fetch_member(winner.id)
-
-    # Build explicit overwrites (deny @everyone; allow winner, bot, staff)
-    overwrites = {
-        guild.default_role: discord.PermissionOverwrite(view_channel=False),
-        winner: discord.PermissionOverwrite(
-            view_channel=True, send_messages=True, read_message_history=True
-        ),
-        guild.me: discord.PermissionOverwrite(  # ensure the bot always has access
-            view_channel=True, send_messages=True, read_message_history=True, manage_channels=True
-        ),
-    }
-    if staff_role:
-        overwrites[staff_role] = discord.PermissionOverwrite(
-            view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
-        )
-
-    name = f"ticket-{winner.name.lower()}-{n_hit}"
-
-    # Create the channel (unsynced from category by virtue of custom overwrites)
-    chan = await guild.create_text_channel(
-        name=name,
-        category=category,
-        overwrites=overwrites,
-        reason="Prizo prize ticket"
-    )
-
-    # 🔒 Double-ensure permissions in case category sync/overrides interfered
-    await chan.set_permissions(
-        winner, view_channel=True, send_messages=True, read_message_history=True
-    )
-    if staff_role:
-        await chan.set_permissions(
-            staff_role, view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
-        )
-    await chan.set_permissions(
-        guild.default_role, view_channel=False
-    )
-    await chan.set_permissions(
-        guild.me, view_channel=True, send_messages=True, read_message_history=True, manage_channels=True
-    )
-
-    # (Optional) make sure the channel stays **unsynced** from category so these overwrites persist
-    with contextlib.suppress(Exception):
-        await chan.edit(sync_permissions=False)
-
-    # Welcome embed
-    em = discord.Embed(
-        title="🎟️ Prize Ticket",
-        description=(
-            f"🎟 Ticket for {winner.mention}\n\n"
-            f"Please provide:\n"
-            f"• **IMVU Account Link:**\n"
-            f"• **Lucky Number Won:** {n_hit}\n"
-            f"• **Prize Claim Notes:** preferred delivery method (credits or WL gift item)\n\n"
-            "Mikey.Moon will review, shut this ticket down, and fire the creds to your VU account, try not to blow it all on dodgy shoes. 😏."
-        ),
-        colour=discord.Colour.green()
-    )
-    em.set_footer(text=f"{guild.name} • Ticket")
-    await chan.send(embed=em)
-    return chan
-
-
-def get_fixed_max(gid: int) -> int | None:
-    with db() as conn:
-        row = conn.execute("SELECT giveaway_fixed_max FROM guild_state WHERE guild_id=?", (gid,)).fetchone()
-        return row["giveaway_fixed_max"] if row else None
-
-
-def _touch_user(conn, gid: int, uid: int, correct=0, wrong=0, streak_best=None, add_badge=False):
-    now = datetime.utcnow().isoformat()
-    row = conn.execute("SELECT * FROM user_stats WHERE guild_id=? AND user_id=?", (gid, uid)).fetchone()
-    if not row:
-        conn.execute("""
-        INSERT INTO user_stats (guild_id, user_id, correct_counts, wrong_counts, streak_best, badges, last_updated)
-        VALUES (?,?,?,?,?,?,?)
-        """, (gid, uid, correct, wrong, streak_best or 0, 1 if add_badge else 0, now))
-    else:
-        new_badges = row["badges"] + (1 if add_badge else 0)
-        new_streak = max(row["streak_best"], streak_best or 0)
-        conn.execute("""
-        UPDATE user_stats
-        SET correct_counts = correct_counts + ?,
-            wrong_counts   = wrong_counts + ?,
-            streak_best    = ?,
-            badges         = ?,
-            last_updated   = ?
-        WHERE guild_id=? AND user_id=?
-        """, (correct, wrong, new_streak, new_badges, now, gid, uid))
-
-def get_leaderboard(gid: int, limit=10):
-    with db() as conn:
-        return conn.execute("""
-        SELECT user_id, correct_counts, badges
-        FROM user_stats WHERE guild_id=?
-        ORDER BY correct_counts DESC, badges DESC, user_id ASC
-        LIMIT ?;
-        """, (gid, limit)).fetchall()
-
-def get_user_stats(gid: int, uid: int):
-    with db() as conn:
-        row = conn.execute("""
-        SELECT correct_counts, wrong_counts, streak_best, badges, last_updated
-        FROM user_stats WHERE guild_id=? AND user_id=?;
-        """, (gid, uid)).fetchone()
-        if not row:
-            return {"correct_counts": 0, "wrong_counts": 0, "streak_best": 0, "badges": 0, "last_updated": None}
-        return dict(row)
-
-def bump_ok(gid: int, uid: int):
-    with db() as conn:
-        st = get_state(gid)
-        next_num = st["current_number"] + 1
-        new_streak = st["guild_streak"] + 1
-        best = max(new_streak, st["best_guild_streak"])
-        conn.execute("""
-        UPDATE guild_state
-        SET current_number=?, last_user_id=?, guild_streak=?, best_guild_streak=?
-        WHERE guild_id=?;
-        """, (next_num, uid, new_streak, best, gid))
-        _touch_user(conn, gid, uid, correct=1, streak_best=new_streak)
-
-def mark_wrong(gid: int, uid: int):
-    with db() as conn:
-        _touch_user(conn, gid, uid, wrong=1)
-        conn.execute("UPDATE guild_state SET guild_streak=0 WHERE guild_id=?", (gid,))
-
-def now_iso(): return datetime.utcnow().isoformat()
-
-def log_correct_count(gid: int, n: int, uid: int):
-    with db() as conn:
-        conn.execute("INSERT OR REPLACE INTO count_log (guild_id, n, user_id, ts) VALUES (?,?,?,?)",
-                     (gid, n, uid, now_iso()))
-
-# ========= Fun facts / banter =========
 # ========= Fun facts / banter =========
 BANTER_PATH = os.getenv("BANTER_PATH", "banter.json")
 def load_banter():
@@ -556,7 +300,6 @@ def load_banter():
             "idle_banter": [], "idle_banter_replies": [], "idle_replies": []
         }
 BANTER = load_banter()
-
 
 def pick_banter(cat: str) -> str:
     lines = BANTER.get(cat, [])
@@ -606,6 +349,21 @@ def maths_fact(n: int) -> str | None:
     if n % 10 == 0:
         return pick_fact("multiple10", n)
     return None
+
+# --- Idle banter rotation (per guild) ---
+from collections import defaultdict as _dd
+_idle_bucket = _dd(list)
+
+def _idle_lines():
+    # prefer explicit idle key from JSON
+    return BANTER.get("idle_banter") or ["…silence…"]
+
+def _next_idle_line(gid: int) -> str:
+    bucket = _idle_bucket[gid]
+    if not bucket:
+        bucket[:] = list(_idle_lines())
+        random.shuffle(bucket)
+    return bucket.pop()
 
 # ========= Milestones =========
 MILESTONES = {10, 20, 25, 30, 40, 50, 69, 75, 80, 90, 100, 111, 123, 150, 200, 250,
@@ -776,7 +534,6 @@ async def on_message(message: discord.Message):
     if not st["channel_id"] or message.channel.id != st["channel_id"]:
         return
 
-#ai starts
     # PATCH: refresh idle timer as soon as something happens in counting channel
     gid = message.guild.id
     last_count_activity[gid] = datetime.now(timezone.utc)
@@ -794,30 +551,13 @@ async def on_message(message: discord.Message):
                     or ["Alright, back to counting."]
                 )
                 line = random.choice(reply_pool)
-
-                line = random.choice(reply_pool)
                 with contextlib.suppress(Exception):
                     await message.channel.send(f"🤖 {line}", reference=message)
                 ai_reply_counts[gid] += 1
                 ai_reply_next_allowed[gid] = now + timedelta(seconds=AI_REPLY_COOLDOWN_SEC)
             last_count_activity[gid] = now
         return  # do NOT treat as a counting attempt
-    ##
-    # --- Idle banter rotation (per guild) ---
-    from collections import defaultdict as _dd
-    _idle_bucket = _dd(list)
-    
-    def _idle_lines():
-        return BANTER.get("idle_banter") or ["…silence…"]
-    
-    def _next_idle_line(gid: int) -> str:
-        bucket = _idle_bucket[gid]
-        if not bucket:
-            bucket[:] = list(_idle_lines())
-            random.shuffle(bucket)
-        return bucket.pop()
 
-    
     # numbers-only extract (or loose: number must be at start)
     INT_STRICT = re.compile(r"^\s*(-?\d+)\s*$")
     INT_LOOSE  = re.compile(r"^\s*(-?\d+)\b")
@@ -1259,11 +999,17 @@ class FunCounting(commands.Cog):
     async def reload_banter(self, interaction: discord.Interaction):
         if not interaction.user.guild_permissions.manage_guild:
             return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
-        global BANTER
-        BANTER = load_banter()
-        _idle_bucket.clear()
 
-        await interaction.response.send_message("✅ Banter reloaded.", ephemeral=True)
+        # Respond quickly so Discord doesn't mark command as unresponsive
+        await interaction.response.defer(ephemeral=True, thinking=False)
+
+        global BANTER, _idle_bucket
+        try:
+            BANTER = load_banter()
+            _idle_bucket.clear()  # reset per-guild rotation so new lines take effect
+            await interaction.followup.send("✅ Banter reloaded.", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Reload failed: {type(e).__name__}: {e}", ephemeral=True)
 
     @app_commands.command(name="ticket_diag", description="Show Prizo's effective permissions in the ticket category.")
     @app_commands.guild_only()
@@ -1395,6 +1141,43 @@ async def setup_cog():
 @bot.event
 async def setup_hook():
     await setup_cog()
+
+# ===== AI banter watchdog (after helpers are defined) =====
+@tasks.loop(seconds=30)
+async def ai_banter_watchdog():
+    now = datetime.now(timezone.utc)
+    for guild in bot.guilds:
+        gid = guild.id
+        if not ai_helper_enabled[gid]:
+            continue
+
+        idle_for = now - last_count_activity[gid]
+        if idle_for < timedelta(minutes=ai_idle_minutes[gid]):
+            continue
+
+        try:
+            st_watch = get_state(gid)
+            counting_channel_id = st_watch["channel_id"]
+            if not counting_channel_id:
+                continue
+
+            channel = guild.get_channel(counting_channel_id)
+            if not channel:
+                continue
+
+            # Use rotated idle banter from JSON
+            line = _next_idle_line(gid)
+            msg = await channel.send(f"🤖 {line}")
+
+            last_ai_message[gid] = msg.id
+            ai_reply_counts[gid] = 0
+            ai_reply_next_allowed[gid] = now + timedelta(seconds=2)
+
+            # Reset idle timer so we don’t spam
+            last_count_activity[gid] = now
+
+        except Exception as e:
+            print(f"[AI banter] guild {gid} error: {e}")
 
 if __name__ == "__main__":
     bot.run(TOKEN)
