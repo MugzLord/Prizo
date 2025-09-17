@@ -309,7 +309,7 @@ async def ai_banter_watchdog():
                 continue
 
             # PATCH: pull from BANTER (your loaded JSON), not undefined var
-            line = random.choice(BANTER.get("idle_banter", ["…silence…"]))
+            line = _next_idle_line(gid)
 
             msg = await channel.send(f"🤖 {line}")
 
@@ -536,17 +536,27 @@ def log_correct_count(gid: int, n: int, uid: int):
                      (gid, n, uid, now_iso()))
 
 # ========= Fun facts / banter =========
+# ========= Fun facts / banter =========
 BANTER_PATH = os.getenv("BANTER_PATH", "banter.json")
 def load_banter():
     try:
         with open(BANTER_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
-            for k in ("wrong", "winner", "milestone", "roast", "nonnumeric", "claim"):
+            # existing categories + idle keys from JSON
+            for k in (
+                "wrong", "winner", "milestone", "roast", "nonnumeric", "claim",
+                "idle_banter", "idle_banter_replies", "idle_replies"
+            ):
                 data.setdefault(k, [])
             return data
     except Exception:
-        return {"wrong": [], "winner": [], "milestone": [], "roast": [], "nonnumeric": [], "claim": []}
+        return {
+            "wrong": [], "winner": [], "milestone": [], "roast": [],
+            "nonnumeric": [], "claim": [],
+            "idle_banter": [], "idle_banter_replies": [], "idle_replies": []
+        }
 BANTER = load_banter()
+
 
 def pick_banter(cat: str) -> str:
     lines = BANTER.get(cat, [])
@@ -777,7 +787,14 @@ async def on_message(message: discord.Message):
             now = datetime.now(timezone.utc)
             # optional: guard tournament/pause here if you have flags
             if ai_reply_counts[gid] < AI_MAX_REPLIES_PER_BANTER and now >= ai_reply_next_allowed[gid]:
-                reply_pool = BANTER.get("idle_banter_replies", BANTER.get("idle_banter", ["Alright, back to counting."]))
+                reply_pool = (
+                    BANTER.get("idle_banter_replies")
+                    or BANTER.get("idle_replies")
+                    or BANTER.get("idle_banter")
+                    or ["Alright, back to counting."]
+                )
+                line = random.choice(reply_pool)
+
                 line = random.choice(reply_pool)
                 with contextlib.suppress(Exception):
                     await message.channel.send(f"🤖 {line}", reference=message)
@@ -785,6 +802,27 @@ async def on_message(message: discord.Message):
                 ai_reply_next_allowed[gid] = now + timedelta(seconds=AI_REPLY_COOLDOWN_SEC)
             last_count_activity[gid] = now
         return  # do NOT treat as a counting attempt
+    ##
+    # --- Idle banter rotation (per guild) ---
+    from collections import defaultdict as _dd
+    _idle_bucket = _dd(list)
+    
+    def _idle_lines():
+        # Accept several possible JSON keys; prefer explicit "idle_banter"
+        return (
+            (BANTER.get("idle_banter") or
+             BANTER.get("idle") or
+             BANTER.get("idle_lines") or [])
+            or ["…silence…"]
+        )
+    
+    def _next_idle_line(gid: int) -> str:
+        bucket = _idle_bucket[gid]
+        if not bucket:
+            bucket[:] = list(_idle_lines())
+            random.shuffle(bucket)
+        return bucket.pop()
+
     
     # numbers-only extract (or loose: number must be at start)
     INT_STRICT = re.compile(r"^\s*(-?\d+)\s*$")
@@ -1229,6 +1267,8 @@ class FunCounting(commands.Cog):
             return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
         global BANTER
         BANTER = load_banter()
+        _idle_bucket.clear()
+
         await interaction.response.send_message("✅ Banter reloaded.", ephemeral=True)
 
     @app_commands.command(name="ticket_diag", description="Show Prizo's effective permissions in the ticket category.")
