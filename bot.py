@@ -162,6 +162,74 @@ def init_db():
                 conn.execute("UPDATE guild_state SET ban_minutes=10 WHERE ban_minutes IS NULL;")
         except Exception:
             pass  # ignore if already added
+##
+def _touch_user(conn, gid: int, uid: int, correct=0, wrong=0, streak_best=None, add_badge=False):
+    now = datetime.utcnow().isoformat()
+    row = conn.execute("SELECT * FROM user_stats WHERE guild_id=? AND user_id=?", (gid, uid)).fetchone()
+    if not row:
+        conn.execute("""
+        INSERT INTO user_stats (guild_id, user_id, correct_counts, wrong_counts, streak_best, badges, last_updated)
+        VALUES (?,?,?,?,?,?,?)
+        """, (gid, uid, correct, wrong, streak_best or 0, 1 if add_badge else 0, now))
+    else:
+        new_badges = row["badges"] + (1 if add_badge else 0)
+        new_streak = max(row["streak_best"], streak_best or 0)
+        conn.execute("""
+        UPDATE user_stats
+        SET correct_counts = correct_counts + ?,
+            wrong_counts   = wrong_counts + ?,
+            streak_best    = ?,
+            badges         = ?,
+            last_updated   = ?
+        WHERE guild_id=? AND user_id=?
+        """, (correct, wrong, new_streak, new_badges, now, gid, uid))
+
+def get_leaderboard(gid: int, limit=10):
+    with db() as conn:
+        return conn.execute("""
+        SELECT user_id, correct_counts, badges
+        FROM user_stats WHERE guild_id=?
+        ORDER BY correct_counts DESC, badges DESC, user_id ASC
+        LIMIT ?;
+        """, (gid, limit)).fetchall()
+
+def get_user_stats(gid: int, uid: int):
+    with db() as conn:
+        row = conn.execute("""
+        SELECT correct_counts, wrong_counts, streak_best, badges, last_updated
+        FROM user_stats WHERE guild_id=? AND user_id=?;
+        """, (gid, uid)).fetchone()
+        if not row:
+            return {"correct_counts": 0, "wrong_counts": 0, "streak_best": 0, "badges": 0, "last_updated": None}
+        return dict(row)
+
+def bump_ok(gid: int, uid: int):
+    with db() as conn:
+        st = get_state(gid)
+        next_num = st["current_number"] + 1
+        new_streak = st["guild_streak"] + 1
+        best = max(new_streak, st["best_guild_streak"])
+        conn.execute("""
+        UPDATE guild_state
+        SET current_number=?, last_user_id=?, guild_streak=?, best_guild_streak=?
+        WHERE guild_id=?;
+        """, (next_num, uid, new_streak, best, gid))
+        _touch_user(conn, gid, uid, correct=1, streak_best=new_streak)
+
+def mark_wrong(gid: int, uid: int):
+    with db() as conn:
+        _touch_user(conn, gid, uid, wrong=1)
+        conn.execute("UPDATE guild_state SET guild_streak=0 WHERE guild_id=?", (gid,))
+
+def now_iso(): 
+    return datetime.utcnow().isoformat()
+
+def log_correct_count(gid: int, n: int, uid: int):
+    with db() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO count_log (guild_id, n, user_id, ts) VALUES (?,?,?,?)",
+            (gid, n, uid, now_iso())
+        )
 
 
 # ========= Helpers =========
@@ -405,6 +473,114 @@ def _roll_next_target_after(conn, guild_id: int, current_number: int):
         "UPDATE guild_state SET giveaway_target=?, giveaway_mode='random' WHERE guild_id=?",
         (target, guild_id)
     )
+#
+class OpenTicketPersistent(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🎫 Open Ticket", style=discord.ButtonStyle.green, custom_id="prizo_open_ticket")
+    async def open_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.message.embeds:
+            return await interaction.response.send_message("No prize info found on this message.", ephemeral=True)
+        emb = interaction.message.embeds[0]
+        desc = (emb.description or "")
+
+        m_user = re.search(r"Winner:\s*<@(\d+)>", desc)
+        m_num  = re.search(r"(?:Target:?|Number)\s*\*{2}(\d+)\*{2}", desc)
+        if not (m_user and m_num):
+            return await interaction.response.send_message("Couldn't read winner/number from this message.", ephemeral=True)
+
+        winner_id = int(m_user.group(1))
+        n_hit     = int(m_num.group(1))
+        if interaction.user.id != winner_id:
+            return await interaction.response.send_message("Only the winner can open this ticket.", ephemeral=True)
+
+        m_prize = re.search(r"Winner:\s*<@\d+>\s*—\s*(.+?)\s", desc)
+        prize = (m_prize.group(1).strip() if m_prize else "🎁 Surprise Gift")
+
+        name = f"ticket-{interaction.user.name.lower()}-{n_hit}"
+        existing = discord.utils.get(interaction.guild.text_channels, name=name)
+        if existing:
+            await interaction.response.send_message(f"✅ Ticket already exists: {existing.mention}", ephemeral=True)
+            with contextlib.suppress(Exception):
+                button.disabled = True
+                await interaction.message.edit(view=self)
+            return
+
+        try:
+            chan = await create_winner_ticket(interaction.guild, interaction.user, prize, n_hit)
+        except discord.Forbidden:
+            turl = get_ticket_url(interaction.guild_id)
+            if turl:
+                view = discord.ui.View()
+                view.add_item(discord.ui.Button(label="🎫 Open Ticket (Link)", url=turl))
+                return await interaction.response.send_message(
+                    "I couldn’t create a channel due to category permissions. Use the link below:",
+                    view=view, ephemeral=True
+                )
+            return await interaction.response.send_message(
+                "I need **Manage Channels** permission on the ticket category to create tickets.",
+                ephemeral=True
+            )
+        except Exception as e:
+            return await interaction.response.send_message(f"Ticket creation failed: {e}", ephemeral=True)
+
+        await interaction.response.send_message(f"✅ Ticket created: {chan.mention}", ephemeral=True)
+        with contextlib.suppress(Exception):
+            button.disabled = True
+            await interaction.message.edit(view=self)
+
+async def create_winner_ticket(
+    guild: discord.Guild,
+    winner: discord.Member,
+    prize: str,
+    n_hit: int
+) -> discord.TextChannel:
+    cat_id, staff_role_id = get_ticket_cfg(guild.id)
+    category = guild.get_channel(cat_id) if cat_id else None
+    staff_role = guild.get_role(staff_role_id) if staff_role_id else None
+
+    if not isinstance(winner, discord.Member):
+        winner = guild.get_member(winner.id) or await guild.fetch_member(winner.id)
+
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        winner: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
+        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_channels=True),
+    }
+    if staff_role:
+        overwrites[staff_role] = discord.PermissionOverwrite(
+            view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
+        )
+
+    name = f"ticket-{winner.name.lower()}-{n_hit}"
+    chan = await guild.create_text_channel(name=name, category=category, overwrites=overwrites, reason="Prizo prize ticket")
+
+    await chan.set_permissions(winner, view_channel=True, send_messages=True, read_message_history=True)
+    if staff_role:
+        await chan.set_permissions(staff_role, view_channel=True, send_messages=True, read_message_history=True, manage_messages=True)
+    await chan.set_permissions(guild.default_role, view_channel=False)
+    await chan.set_permissions(guild.me, view_channel=True, send_messages=True, read_message_history=True, manage_channels=True)
+    with contextlib.suppress(Exception):
+        await chan.edit(sync_permissions=False)
+
+    em = discord.Embed(
+        title="🎟️ Prize Ticket",
+        description=(
+            f"🎟 Ticket for {winner.mention}\n\n"
+            f"Please provide:\n"
+            f"• **IMVU Account Link**\n"
+            f"• **Lucky Number Won:** {n_hit}\n"
+            f"• **Prize Claim Notes**\n\n"
+            "Mikey.Moon will review and deliver your prize."
+        ),
+        colour=discord.Colour.green()
+    )
+    em.set_footer(text=f"{guild.name} • Ticket")
+    await chan.send(embed=em)
+    return chan
+
+
 
 def ensure_giveaway_target(gid: int):
     """Only re-arm if target is missing or already passed."""
