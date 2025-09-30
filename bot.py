@@ -349,29 +349,55 @@ def top_wins(guild_id: int, limit: int = 10):
         """, (guild_id, limit)).fetchall()
         
 # ========= Fun facts / banter =========
-BANTER_PATH = os.getenv(
-    "BANTER_PATH",
-    os.path.join(os.path.dirname(__file__), "banter.json")
-)
+from pathlib import Path
+import hashlib
+
+APP_DIR = Path(__file__).resolve().parent
+
+BANTER_PATH = Path(os.getenv("BANTER_PATH", APP_DIR / "banter.json"))
+FUNFACTS_PATH = Path(os.getenv("FUNFACTS_PATH", APP_DIR / "funfacts.json"))
+
+BANTER = {}
+FUNFACTS = {}
+BANTER_VER = "unknown"
+_BANTER_MTIME = 0.0
+
+def _banter_ver(raw_bytes: bytes) -> str:
+    return hashlib.sha1(raw_bytes).hexdigest()[:8]
 
 def load_banter():
+    """Load banter.json into BANTER and set BANTER_VER/mtime."""
+    global BANTER, BANTER_VER, _BANTER_MTIME
     try:
-        with open(BANTER_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            # existing categories + idle keys from JSON
-            for k in (
-                "wrong", "winner", "milestone", "roast", "nonnumeric", "claim",
-                "idle_banter", "idle_banter_replies"
-            ):
-                data.setdefault(k, [])
-            return data
+        raw = BANTER_PATH.read_bytes()
+        BANTER = json.loads(raw.decode("utf-8"))
+        # ensure keys exist
+        for k in ("wrong","winner","milestone","roast","nonnumeric","claim",
+                  "idle_banter","idle_banter_replies"):
+            BANTER.setdefault(k, [])
+        BANTER_VER = _banter_ver(raw)
+        _BANTER_MTIME = BANTER_PATH.stat().st_mtime
+        print(f"[BANTER] Loaded {BANTER_PATH} v{BANTER_VER}")
+        return BANTER
+    except Exception as e:
+        print(f"[BANTER] FAILED loading {BANTER_PATH}: {e}")
+        BANTER = { "wrong": [], "winner": [], "milestone": [], "roast": [],
+                   "nonnumeric": [], "claim": [],
+                   "idle_banter": [], "idle_banter_replies": [], "idle_replies": [] }
+        BANTER_VER = "unknown"
+        return BANTER
+
+def load_funfacts():
+    global FUNFACTS
+    try:
+        FUNFACTS = json.loads(FUNFACTS_PATH.read_text(encoding="utf-8"))
     except Exception:
-        return {
-            "wrong": [], "winner": [], "milestone": [], "roast": [],
-            "nonnumeric": [], "claim": [],
-            "idle_banter": [], "idle_banter_replies": [], "idle_replies": []
-        }
+        FUNFACTS = {}
+    return FUNFACTS
+
 BANTER = load_banter()
+FUNFACTS = load_funfacts()
+
 def _banter_summary():
     return {
         "idle_banter": len(BANTER.get("idle_banter", [])),
@@ -379,11 +405,13 @@ def _banter_summary():
         "wrong": len(BANTER.get("wrong", [])),
         "milestone": len(BANTER.get("milestone", [])),
         "winner": len(BANTER.get("winner", [])),
+        "ver": BANTER_VER,
     }
 
 def pick_banter(cat: str) -> str:
     lines = BANTER.get(cat, [])
     return random.choice(lines) if lines else ""
+
 
 FUNFACTS_PATH = os.getenv("FUNFACTS_PATH", "funfacts.json")
 def load_funfacts():
@@ -686,6 +714,10 @@ async def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached
 async def on_ready():
     init_db()
 
+    # start banter file watch (optional)
+    if not banter_file_watch.is_running():
+        banter_file_watch.start()
+
     # Register the persistent ticket button (works across restarts)
     try:
         bot.add_view(OpenTicketPersistent())
@@ -715,6 +747,17 @@ async def on_guild_join(guild: discord.Guild):
 
 print(f"BANTER_PATH: {BANTER_PATH} • loaded {_banter_summary()}")
 
+@tasks.loop(seconds=30)
+async def banter_file_watch():
+    global _BANTER_MTIME
+    try:
+        m = BANTER_PATH.stat().st_mtime
+        if m != _BANTER_MTIME:
+            load_banter()
+            _idle_bucket.clear()
+            print(f"[BANTER] Auto-reloaded to v{BANTER_VER}")
+    except Exception as e:
+        print(f"[BANTER] watch error: {e}")
 
 @bot.event
 async def on_message(message: discord.Message):
@@ -1193,13 +1236,12 @@ class FunCounting(commands.Cog):
 
         # Respond quickly so Discord doesn't mark command as unresponsive
         await interaction.response.defer(ephemeral=True, thinking=False)
-
         global BANTER, _idle_bucket
         try:
-            BANTER = load_banter()
-            _idle_bucket.clear()  # reset per-guild rotation so new lines take effect
+            load_banter()
+            _idle_bucket.clear()  # ensure new idle lines are used next
             await interaction.followup.send(
-                f"✅ Banter reloaded from `{BANTER_PATH}` • {_banter_summary()}",
+                f"✅ Reloaded banter v**{BANTER_VER}** from `{BANTER_PATH}` • {_banter_summary()}",
                 ephemeral=True
             )
         except Exception as e:
@@ -1207,6 +1249,7 @@ class FunCounting(commands.Cog):
                 f"❌ Reload failed: {type(e).__name__}: {e}",
                 ephemeral=True
             )
+
 
     @app_commands.command(name="ticket_diag", description="Show Prizo's effective permissions in the ticket category.")
     @app_commands.guild_only()
@@ -1311,6 +1354,15 @@ class FunCounting(commands.Cog):
             f"🏁 Tournament active — ends in **~{mins}m**\n"
             f"Reward: **{fixed_reward}** • Cap: **{jp_hit}/{max_jp}** • After cap: **{'silent' if silent else 'announce'}**."
         )
+
+    @app_commands.command(name="banter_version", description="Show the loaded banter.json version and path.")
+    @app_commands.guild_only()
+    async def banter_version(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            f"banter.json v**{BANTER_VER}**\npath: `{BANTER_PATH}`\ncounts: {_banter_summary()}",
+            ephemeral=True
+        )
+
 
     #ai
     # PATCH: simple AI banter toggles
