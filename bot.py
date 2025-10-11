@@ -162,6 +162,18 @@ def init_db():
                 conn.execute("UPDATE guild_state SET ban_minutes=10 WHERE ban_minutes IS NULL;")
         except Exception:
             pass  # ignore if already added
+
+
+        # --- Add count_mode/current_letter if missing (safe one-time migration) ---
+        try:
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(guild_state);").fetchall()]
+            if "count_mode" not in cols:
+                conn.execute("ALTER TABLE guild_state ADD COLUMN count_mode TEXT NOT NULL DEFAULT 'numbers';")
+            if "current_letter" not in cols:
+                conn.execute("ALTER TABLE guild_state ADD COLUMN current_letter TEXT NOT NULL DEFAULT 'A';")
+        except Exception:
+            pass
+
 ##
 def _touch_user(conn, gid: int, uid: int, correct=0, wrong=0, streak_best=None, add_badge=False):
     now = datetime.utcnow().isoformat()
@@ -472,6 +484,39 @@ def _next_idle_line(gid: int) -> str:
         bucket[:] = list(_idle_lines())
         random.shuffle(bucket)
     return bucket.pop()
+
+# === Letters mode helpers ===
+LETTER_STRICT = re.compile(r"^\s*([A-Za-z])\s*$")
+LETTER_LOOSE  = re.compile(r"^\s*([A-Za-z])")
+
+def extract_letter(text: str, strict: bool) -> str | None:
+    m = (LETTER_STRICT if strict else LETTER_LOOSE).match(text or "")
+    return m.group(1).upper() if m else None
+
+def next_letter(letter: str) -> str:
+    if not letter:
+        return "A"
+    c = letter.upper()
+    return chr(((ord(c) - 65 + 1) % 26) + 65)
+
+def bump_ok_letter(gid: int, uid: int, expected_letter: str):
+    """On correct letter, advance to the next, update streaks/last_user like numbers do."""
+    with db() as conn:
+        st = get_state(gid)
+        new_streak = st["guild_streak"] + 1
+        best = max(new_streak, st["best_guild_streak"])
+        nxt = next_letter(expected_letter)
+        conn.execute("""
+            UPDATE guild_state
+            SET current_letter=?, last_user_id=?, guild_streak=?, best_guild_streak=?
+            WHERE guild_id=?;
+        """, (nxt, uid, new_streak, best, gid))
+        _touch_user(conn, gid, uid, correct=1, streak_best=new_streak)
+
+def reset_letters(gid: int, start: str = "A"):
+    with db() as conn:
+        conn.execute("UPDATE guild_state SET current_letter=?, last_user_id=NULL, guild_streak=0 WHERE guild_id=?", (start.upper(), gid))
+
 
 # ========= Milestones =========
 MILESTONES = {10, 20, 25, 30, 40, 50, 69, 75, 80, 90, 100, 111, 123, 150, 200, 250,
@@ -793,6 +838,106 @@ async def on_message(message: discord.Message):
         return  # do NOT treat as a counting attempt
 
     # numbers-only extract (or loose: number must be at start)
+        # === MODE SWITCH: numbers | letters ===
+    mode = (st.get("count_mode") if isinstance(st, dict) else st["count_mode"]) or "numbers"
+    mode = mode.lower()
+
+    if mode == "letters":
+        # Letters-mode parsing (strict=single letter when numbers_only=ON)
+        posted_letter = extract_letter(message.content, strict=bool(st["numbers_only"]))
+        if posted_letter is None:
+            banter = (pick_banter("nonnumeric") or "Letters only in here, mate.").replace("{user}", message.author.mention)
+            with contextlib.suppress(Exception):
+                await message.reply(banter)
+            return
+
+        expected_letter = (st["current_letter"] or "A").upper()
+        last_user = st["last_user_id"]
+
+        # per-guild runtime trackers (re-use your existing structures)
+        gid = message.guild.id
+        locks = bot.locked_players.setdefault(gid, {})
+        lp = bot.last_poster.setdefault(gid, {"user_id": None, "count": 0})
+
+        # --- timeout check ---
+        now = datetime.utcnow()
+        if message.author.id in locks:
+            if now < locks[message.author.id]:
+                with contextlib.suppress(Exception):
+                    await message.delete()
+                return
+            else:
+                del locks[message.author.id]
+
+        # last poster tracker
+        if lp["user_id"] == message.author.id:
+            lp["count"] += 1
+        else:
+            lp["user_id"] = message.author.id
+            lp["count"] = 1
+
+        # --- rule: no double posts ---
+        if last_user == message.author.id:
+            mark_wrong(message.guild.id, message.author.id)
+            await safe_react(message, "⛔")
+            banter = (pick_banter("wrong") or "Not two in a row. Behave. 😅").replace("{n}", expected_letter)
+            with contextlib.suppress(Exception):
+                await message.reply(
+                    f"Not two in a row, {message.author.mention}. {banter} Next is **{expected_letter}** for someone else."
+                )
+            return
+
+        # --- must match expected letter ---
+        if posted_letter != expected_letter:
+            mark_wrong(message.guild.id, message.author.id)
+
+            key = (message.guild.id, message.channel.id, message.author.id)
+            _wrong_streak[key] += 1
+
+            wrong_entries[message.guild.id] += 1
+            if wrong_entries[message.guild.id] >= 5:
+                wrong_entries[message.guild.id] = 0
+                reset_letters(message.guild.id, "A")
+                with contextlib.suppress(Exception):
+                    await message.channel.send("⚠️ Five wrong entries — starting again at **A**. Keep it tidy, team.")
+                lp["user_id"] = None
+                lp["count"] = 0
+                return
+
+            st_bench = get_state(message.guild.id)
+            ban_minutes = int(st_bench["ban_minutes"] if "ban_minutes" in st_bench.keys() and st_bench["ban_minutes"] is not None else 10)
+
+            if _wrong_streak[key] >= 3:
+                _wrong_streak[key] = 0
+                locks[message.author.id] = now + timedelta(minutes=ban_minutes)
+                roast = pick_banter("roast") or "Have a sit-down and recite the alphabet. 🛋️"
+                with contextlib.suppress(Exception):
+                    await safe_react(message, "⛔")
+                    await message.reply(
+                        f"🚫 {message.author.mention} three wrong on the trot — benched for **{ban_minutes} minutes**. {roast}"
+                    )
+                lp["user_id"] = None
+                lp["count"] = 0
+                return
+
+            await safe_react(message, "❌")
+            banter = pick_banter("wrong") or "Oof—phonics says ‘nah’. 🔤"
+            with contextlib.suppress(Exception):
+                await message.reply(f"{banter} Next up is **{expected_letter}**.")
+            return
+
+        # --- success in letters mode ---
+        bump_ok_letter(message.guild.id, message.author.id, expected_letter)
+        await safe_react(message, "✅")
+        _wrong_streak[(message.guild.id, message.channel.id, message.author.id)] = 0
+        wrong_entries[message.guild.id] = 0
+
+        # Numbers-only extras (milestones, maths facts, giveaways, etc.) are skipped in letters mode.
+        # You can add letter milestones if you fancy; keeping minimal/surgical.
+
+        return  # do not fall through to numbers logic
+
+    # === numbers mode (original logic) ===
     INT_STRICT = re.compile(r"^\s*(-?\d+)\s*$")
     INT_LOOSE  = re.compile(r"^\s*(-?\d+)\b")
     def extract_int(text: str, strict: bool):
@@ -805,6 +950,7 @@ async def on_message(message: discord.Message):
         with contextlib.suppress(Exception):
             await message.reply(banter)
         return
+
 
     expected = st["current_number"] + 1
     last_user = st["last_user_id"]
@@ -1249,6 +1395,7 @@ class FunCounting(commands.Cog):
                 f"❌ Reload failed: {type(e).__name__}: {e}",
                 ephemeral=True
             )
+            
 
 
     @app_commands.command(name="ticket_diag", description="Show Prizo's effective permissions in the ticket category.")
@@ -1363,6 +1510,29 @@ class FunCounting(commands.Cog):
             ephemeral=True
         )
 
+
+        @app_commands.command(name="count_mode", description="Set counting mode for this server: numbers or letters.")
+    @app_commands.choices(mode=[
+        app_commands.Choice(name="Numbers (1,2,3…)", value="numbers"),
+        app_commands.Choice(name="Letters (A,B,C…)", value="letters"),
+    ])
+    @app_commands.guild_only()
+    async def count_mode(self, interaction: discord.Interaction, mode: app_commands.Choice[str]):
+        if not interaction.user.guild_permissions.manage_guild:
+            return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
+        val = mode.value.lower()
+        with db() as conn:
+            conn.execute("UPDATE guild_state SET count_mode=? WHERE guild_id=?", (val, interaction.guild_id))
+            if val == "letters":
+                # start at A
+                conn.execute("UPDATE guild_state SET current_letter='A', last_user_id=NULL, guild_streak=0 WHERE guild_id=?", (interaction.guild_id,))
+            else:
+                # keep numeric start/current as-is; just clear last_user to avoid double-post traps
+                conn.execute("UPDATE guild_state SET last_user_id=NULL, guild_streak=0 WHERE guild_id=?", (interaction.guild_id,))
+        msg = "🔢 Mode set to **numbers**. Next is **{}**.".format(get_state(interaction.guild_id)["current_number"] + 1)
+        if val == "letters":
+            msg = "🔤 Mode set to **letters**. Next is **A**."
+        await interaction.response.send_message(msg, ephemeral=True)
 
     #ai
     # PATCH: simple AI banter toggles
