@@ -1148,6 +1148,29 @@ class FunCounting(commands.Cog):
             ephemeral=True
         )
 
+
+    @app_commands.command(name="count_mode", description="Set counting mode for this server: numbers or letters.")
+    @app_commands.choices(mode=[
+        app_commands.Choice(name="Numbers (1,2,3…)", value="numbers"),
+        app_commands.Choice(name="Letters (A,B,C…)", value="letters"),
+    ])
+    @app_commands.guild_only()
+    async def count_mode(self, interaction: discord.Interaction, mode: app_commands.Choice[str]):
+        if not interaction.user.guild_permissions.manage_guild:
+            return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
+        val = mode.value.lower()
+        with db() as conn:
+            conn.execute("UPDATE guild_state SET count_mode=? WHERE guild_id=?", (val, interaction.guild_id))
+            if val == "letters":
+                # start at A
+                conn.execute("UPDATE guild_state SET current_letter='A', last_user_id=NULL, guild_streak=0 WHERE guild_id=?", (interaction.guild_id,))
+            else:
+                # keep numeric start/current as-is; just clear last_user to avoid double-post traps
+                conn.execute("UPDATE guild_state SET last_user_id=NULL, guild_streak=0 WHERE guild_id=?", (interaction.guild_id,))
+        msg = "🔢 Mode set to **numbers**. Next is **{}**.".format(get_state(interaction.guild_id)["current_number"] + 1)
+        if val == "letters":
+            msg = "🔤 Mode set to **letters**. Next is **A**."
+        await interaction.response.send_message(msg, ephemeral=True)
     @app_commands.command(name="numbers_only", description="Toggle numbers-only mode.")
     @app_commands.guild_only()
     async def numbers_only_cmd(self, interaction: discord.Interaction, on: bool):
@@ -1512,30 +1535,7 @@ class FunCounting(commands.Cog):
         )
 
 
-    @app_commands.command(name="count_mode", description="Set counting mode for this server: numbers or letters.")
-    @app_commands.choices(mode=[
-        app_commands.Choice(name="Numbers (1,2,3…)", value="numbers"),
-        app_commands.Choice(name="Letters (A,B,C…)", value="letters"),
-    ])
-    @app_commands.guild_only()
-    async def count_mode(self, interaction: discord.Interaction, mode: app_commands.Choice[str]):
-        if not interaction.user.guild_permissions.manage_guild:
-            return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
-        val = mode.value.lower()
-        with db() as conn:
-            conn.execute("UPDATE guild_state SET count_mode=? WHERE guild_id=?", (val, interaction.guild_id))
-            if val == "letters":
-                # start at A
-                conn.execute("UPDATE guild_state SET current_letter='A', last_user_id=NULL, guild_streak=0 WHERE guild_id=?", (interaction.guild_id,))
-            else:
-                # keep numeric start/current as-is; just clear last_user to avoid double-post traps
-                conn.execute("UPDATE guild_state SET last_user_id=NULL, guild_streak=0 WHERE guild_id=?", (interaction.guild_id,))
-        msg = "🔢 Mode set to **numbers**. Next is **{}**.".format(get_state(interaction.guild_id)["current_number"] + 1)
-        if val == "letters":
-            msg = "🔤 Mode set to **letters**. Next is **A**."
-        await interaction.response.send_message(msg, ephemeral=True)
-
-    #ai
+        #ai
     # PATCH: simple AI banter toggles
     @app_commands.command(name="aibanter_on", description="Enable AI banter in counting channel.")
     @app_commands.guild_only()
