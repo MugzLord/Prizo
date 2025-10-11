@@ -163,7 +163,6 @@ def init_db():
         except Exception:
             pass  # ignore if already added
 
-
         # --- Add count_mode/current_letter if missing (safe one-time migration) ---
         try:
             cols = [r[1] for r in conn.execute("PRAGMA table_info(guild_state);").fetchall()]
@@ -279,6 +278,8 @@ def reset_count(gid: int):
             "UPDATE guild_state SET current_number=?, last_user_id=NULL, guild_streak=0 WHERE guild_id=?",
             (row["start_number"] - 1, gid)
         )
+        # keep letters mode tidy too
+        conn.execute("UPDATE guild_state SET current_letter='A' WHERE guild_id=?", (gid,))
 
 def set_numbers_only(gid: int, flag: bool):
     with db() as conn:
@@ -838,7 +839,7 @@ async def on_message(message: discord.Message):
         return  # do NOT treat as a counting attempt
 
     # numbers-only extract (or loose: number must be at start)
-        # === MODE SWITCH: numbers | letters ===
+    # === MODE SWITCH: numbers | letters ===
     mode = (st.get("count_mode") if isinstance(st, dict) else st["count_mode"]) or "numbers"
     mode = mode.lower()
 
