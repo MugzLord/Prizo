@@ -1511,7 +1511,7 @@ class FunCounting(commands.Cog):
         )
 
 
-        @app_commands.command(name="count_mode", description="Set counting mode for this server: numbers or letters.")
+    @app_commands.command(name="count_mode", description="Set counting mode for this server: numbers or letters.")
     @app_commands.choices(mode=[
         app_commands.Choice(name="Numbers (1,2,3…)", value="numbers"),
         app_commands.Choice(name="Letters (A,B,C…)", value="letters"),
