@@ -14,7 +14,7 @@ from discord.ext import commands
 from collections import defaultdict
 _wrong_streak = defaultdict(int)
 
-q
+
 # ========= Basics =========
 TOKEN = os.getenv("DISCORD_TOKEN")
 if not TOKEN:
