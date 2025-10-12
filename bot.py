@@ -501,7 +501,7 @@ def next_letter(letter: str) -> str:
     return chr(((ord(c) - 65 + 1) % 26) + 65)
 
 def bump_ok_letter(gid: int, uid: int, expected_letter: str):
-    """On correct letter, advance to the next, update streaks/last_user like numbers do."""
+    """On correct letter, advance to the next, update streaks/last_user, and bump hidden numeric step by 1."""
     with db() as conn:
         st = get_state(gid)
         new_streak = st["guild_streak"] + 1
@@ -509,10 +509,15 @@ def bump_ok_letter(gid: int, uid: int, expected_letter: str):
         nxt = next_letter(expected_letter)
         conn.execute("""
             UPDATE guild_state
-            SET current_letter=?, last_user_id=?, guild_streak=?, best_guild_streak=?
+            SET current_letter=?,
+                current_number = current_number + 1,   -- 🔒 keep numeric step moving for giveaways
+                last_user_id=?,
+                guild_streak=?,
+                best_guild_streak=?
             WHERE guild_id=?;
         """, (nxt, uid, new_streak, best, gid))
         _touch_user(conn, gid, uid, correct=1, streak_best=new_streak)
+
 
 def reset_letters(gid: int, start: str = "A"):
     with db() as conn:
@@ -935,6 +940,41 @@ async def on_message(message: discord.Message):
 
         # Numbers-only extras (milestones, maths facts, giveaways, etc.) are skipped in letters mode.
         # You can add letter milestones if you fancy; keeping minimal/surgical.
+                # --- giveaway: letters also advance hidden numeric steps ---
+        try:
+            # step that was just reached (we computed it before bump)
+            # If you don't still have 'st' here, re-fetch it.
+            st_now = get_state(message.guild.id)
+            reached_step = st_now["current_number"]  # we already incremented in bump_ok_letter
+            ensure_giveaway_target(message.guild.id)
+
+            target_now = st_now["giveaway_target"]
+            if target_now is not None and int(target_now) == int(reached_step):
+                did_announce = await try_giveaway_draw(bot, message, reached_step)
+
+                # tournament hook (same as numbers)
+                is_active, ends_at, fixed_reward, max_jp, jp_hit, silent = get_tourney(message.guild.id)
+                if is_active and parse_iso(ends_at) and now_utc() < parse_iso(ends_at):
+                    if jp_hit < max_jp:
+                        add_tourney_win(message.guild.id, message.author.id, 1)
+                        set_tourney(message.guild.id, jackpots_hit=jp_hit + 1)
+                        await message.channel.send(
+                            f"🏁 Tournament win for {message.author.mention}! (+1) • {fixed_reward} creds"
+                        )
+                    elif not silent:
+                        await message.channel.send(
+                            f"{message.author.mention} hit another jackpot, "
+                            f"but the tournament cap of {max_jp} is already reached!"
+                        )
+
+                with contextlib.suppress(Exception):
+                    await safe_react(message, "🎉")
+                await message.channel.send(
+                    f"🎉 {message.author.mention} bagged the jackpot! New jackpot is armed… keep going through the alphabet."
+                )
+        except Exception:
+            pass
+
 
         return  # do not fall through to numbers logic
 
