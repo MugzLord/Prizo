@@ -13,6 +13,23 @@ from discord import app_commands
 from discord.ext import commands
 from collections import defaultdict
 _wrong_streak = defaultdict(int)
+# --- reward parsing helper (supports credits or xWL) ---
+import re
+
+def parse_reward_token(token: str):
+    """
+    Accepts: '1000', '2k', 'xWL', '3xWL' (case-insensitive).
+    Returns: ('credits', 1000) or ('xwl', 3)
+    Raises: ValueError on invalid input.
+    """
+    s = str(token).strip().lower()
+    if s.isdigit(): return ('credits', int(s))
+    m = re.fullmatch(r'(\d+)\s*k', s)
+    if m: return ('credits', int(m.group(1)) * 1000)
+    if s == 'xwl': return ('xwl', 1)
+    m = re.fullmatch(r'(\d+)\s*xwl', s)
+    if m: return ('xwl', int(m.group(1)))
+    raise ValueError("Reward must be an integer (e.g., 1000), '2k', 'xWL', or '3xWL'.")
 
 
 # ========= Basics =========
@@ -374,7 +391,8 @@ def top_wins(guild_id: int, limit: int = 10):
             SELECT user_id, wins FROM tournament_wins
             WHERE guild_id=? ORDER BY wins DESC, user_id ASC LIMIT ?
         """, (guild_id, limit)).fetchall()
-        
+
+       
 # ========= Fun facts / banter =========
 from pathlib import Path
 import hashlib
@@ -1571,7 +1589,7 @@ class FunCounting(commands.Cog):
         self,
         interaction: discord.Interaction,
         duration: app_commands.Range[int, 1, 1440] = 30,
-        reward: app_commands.Range[int, 1, 10_000_000] = 1000,
+        reward: str = "1000",
         cap: app_commands.Range[int, 1, 100] = 5,
         silent: bool = True
     ):
@@ -1579,6 +1597,16 @@ class FunCounting(commands.Cog):
             return await interaction.response.send_message(
                 "You need **Manage Server** permission.", ephemeral=True
             )
+
+                # --- Parse reward token (accepts credits or xWL) ---
+        try:
+            reward_kind, reward_amount = parse_reward_token(reward)
+        except ValueError as e:
+            return await interaction.response.send_message(f"❌ {e}", ephemeral=True)
+
+        reward_label = f"{reward_amount}xWL" if reward_kind == "xwl" else f"{reward_amount:,} credits"
+        reward_credits = reward_amount if reward_kind == "credits" else 0
+
         g = interaction.guild
         ends_at = now_utc() + timedelta(minutes=int(duration))
         set_tourney(
@@ -1593,7 +1621,7 @@ class FunCounting(commands.Cog):
         reset_tourney_wins(g.id)
         await interaction.response.send_message(
             f"🏁 **Prizo Tournament started!**\n"
-            f"Duration: **{duration}m** • Reward: **{reward}** • Cap: **{cap} jackpots**\n"
+            f"Duration: **{duration}m** • Reward: **{reward_label}** • Cap: **{cap} jackpots**\n"
             f"_Jackpots after cap will be {'silent' if silent else 'announced'}._"
         )
 
