@@ -13,9 +13,8 @@ from discord import app_commands
 from discord.ext import commands
 from collections import defaultdict
 _wrong_streak = defaultdict(int)
-# --- reward parsing helper (supports credits or xWL) ---
-import re
 
+# --- reward parsing helper (supports credits or xWL) ---
 def parse_reward_token(token: str):
     """
     Accepts: '1000', '2k', 'xWL', '3xWL' (case-insensitive).
@@ -23,14 +22,17 @@ def parse_reward_token(token: str):
     Raises: ValueError on invalid input.
     """
     s = str(token).strip().lower()
-    if s.isdigit(): return ('credits', int(s))
+    if s.isdigit():
+        return ('credits', int(s))
     m = re.fullmatch(r'(\d+)\s*k', s)
-    if m: return ('credits', int(m.group(1)) * 1000)
-    if s == 'xwl': return ('xwl', 1)
+    if m:
+        return ('credits', int(m.group(1)) * 1000)
+    if s == 'xwl':
+        return ('xwl', 1)
     m = re.fullmatch(r'(\d+)\s*xwl', s)
-    if m: return ('xwl', int(m.group(1)))
+    if m:
+        return ('xwl', int(m.group(1)))
     raise ValueError("Reward must be an integer (e.g., 1000), '2k', 'xWL', or '3xWL'.")
-
 
 # ========= Basics =========
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -43,7 +45,8 @@ INTENTS.guilds = True
 INTENTS.members = True
 
 bot = commands.Bot(command_prefix="!", intents=INTENTS)
-#AI Helper
+
+# AI Helper
 # PATCH: wrong-entry tracking (per guild)
 wrong_entries = defaultdict(int)
 
@@ -58,7 +61,7 @@ last_count_activity   = defaultdict(lambda: datetime.now(timezone.utc))
 last_ai_message       = defaultdict(lambda: None)
 ai_reply_counts       = defaultdict(int)
 ai_reply_next_allowed = defaultdict(lambda: datetime.now(timezone.utc))
-#end of ai additional
+# end of ai additional
 
 # ========= Storage =========
 DB_PATH = os.getenv("DB_PATH", "counting_fun.db")
@@ -69,8 +72,10 @@ def db():
     dir_path = os.path.dirname(abs_path)
     if dir_path:
         os.makedirs(dir_path, exist_ok=True)
-    conn = sqlite3.connect(abs_path)
+    # Harden the connection against brief lock contention
+    conn = sqlite3.connect(abs_path, timeout=10)
     conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA busy_timeout=5000;")  # 5s
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -112,7 +117,11 @@ def init_db():
             giveaway_open INTEGER NOT NULL DEFAULT 1,
             winner_user_id INTEGER,
             ticket_category_id INTEGER,
-            ticket_staff_role_id INTEGER
+            ticket_staff_role_id INTEGER,
+            count_mode TEXT NOT NULL DEFAULT 'numbers',
+            current_letter TEXT NOT NULL DEFAULT 'A',
+            ban_minutes INTEGER NOT NULL DEFAULT 10,
+            count_paused INTEGER NOT NULL DEFAULT 0
         );
         """)
         conn.execute("""
@@ -169,18 +178,15 @@ def init_db():
             PRIMARY KEY (guild_id, user_id)
         );
         """)
-        
-        # --- Add ban_minutes if missing (safe one-time migration) ---
+
+        # Safe migrations (kept; but consolidated in CREATE TABLE)
         try:
-            # check existing columns
             cols = [r[1] for r in conn.execute("PRAGMA table_info(guild_state);").fetchall()]
             if "ban_minutes" not in cols:
                 conn.execute("ALTER TABLE guild_state ADD COLUMN ban_minutes INTEGER NOT NULL DEFAULT 10;")
                 conn.execute("UPDATE guild_state SET ban_minutes=10 WHERE ban_minutes IS NULL;")
         except Exception:
-            pass  # ignore if already added
-
-        # --- Add count_mode/current_letter if missing (safe one-time migration) ---
+            pass
         try:
             cols = [r[1] for r in conn.execute("PRAGMA table_info(guild_state);").fetchall()]
             if "count_mode" not in cols:
@@ -189,9 +195,6 @@ def init_db():
                 conn.execute("ALTER TABLE guild_state ADD COLUMN current_letter TEXT NOT NULL DEFAULT 'A';")
         except Exception:
             pass
-
-
-        # --- Add count_paused if missing (safe one-time migration) ---
         try:
             cols = [r[1] for r in conn.execute("PRAGMA table_info(guild_state);").fetchall()]
             if "count_paused" not in cols:
@@ -259,7 +262,7 @@ def mark_wrong(gid: int, uid: int):
         _touch_user(conn, gid, uid, wrong=1)
         conn.execute("UPDATE guild_state SET guild_streak=0 WHERE guild_id=?", (gid,))
 
-def now_iso(): 
+def now_iso():
     return datetime.utcnow().isoformat()
 
 def log_correct_count(gid: int, n: int, uid: int):
@@ -268,7 +271,6 @@ def log_correct_count(gid: int, n: int, uid: int):
             "INSERT OR REPLACE INTO count_log (guild_id, n, user_id, ts) VALUES (?,?,?,?)",
             (gid, n, uid, now_iso())
         )
-
 
 # ========= Helpers =========
 def get_state(gid: int):
@@ -351,30 +353,23 @@ def parse_iso(s: str | None):
         return None
 
 def get_tourney(guild_id: int):
+    import time
     with db() as con:
         row = con.execute("""
             SELECT is_active, ends_at_utc, fixed_reward, max_jackpots, jackpots_hit, silent_after_limit
             FROM tournaments WHERE guild_id=?
         """, (guild_id,)).fetchone()
         if not row:
-
-    import time
-    
-    for _ in range(5):  # retry up to 5 times
-        try:
-            con.execute("INSERT OR IGNORE INTO tournaments(guild_id) VALUES(?)", (guild_id,))
-            con.commit()
-            break
-        except sqlite3.OperationalError as e:
-            if "locked" in str(e):
-                time.sleep(0.2)  # wait 200ms then retry
-                continue
-            else:
-                raise
-
-           
-            con.execute("INSERT OR IGNORE INTO tournaments(guild_id) VALUES(?)", (guild_id,))
-            con.commit()
+            # First touch for this guild; be resilient to transient locks
+            for _ in range(5):
+                try:
+                    con.execute("INSERT OR IGNORE INTO tournaments(guild_id) VALUES(?)", (guild_id,))
+                    break
+                except sqlite3.OperationalError as e:
+                    if "locked" in str(e).lower():
+                        time.sleep(0.2)
+                        continue
+                    raise
             return (0, None, 1000, 5, 0, 1)
         return (row["is_active"], row["ends_at_utc"], row["fixed_reward"],
                 row["max_jackpots"], row["jackpots_hit"], row["silent_after_limit"])
@@ -408,7 +403,6 @@ def top_wins(guild_id: int, limit: int = 10):
             WHERE guild_id=? ORDER BY wins DESC, user_id ASC LIMIT ?
         """, (guild_id, limit)).fetchall()
 
-       
 # ========= Fun facts / banter =========
 from pathlib import Path
 import hashlib
@@ -472,16 +466,6 @@ def _banter_summary():
 def pick_banter(cat: str) -> str:
     lines = BANTER.get(cat, [])
     return random.choice(lines) if lines else ""
-
-
-FUNFACTS_PATH = os.getenv("FUNFACTS_PATH", "funfacts.json")
-def load_funfacts():
-    try:
-        with open(FUNFACTS_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-FUNFACTS = load_funfacts()
 
 def pick_fact(category: str, n: int) -> str | None:
     lines = FUNFACTS.get(category, [])
@@ -587,7 +571,6 @@ def reset_letters(gid: int, start: str = "A"):
     with db() as conn:
         conn.execute("UPDATE guild_state SET current_letter=?, last_user_id=NULL, guild_streak=0 WHERE guild_id=?", (start.upper(), gid))
 
-
 # ========= Milestones =========
 MILESTONES = {10, 20, 25, 30, 40, 50, 69, 75, 80, 90, 100, 111, 123, 150, 200, 250,
               300, 333, 369, 400, 420, 500, 600, 666, 700, 750, 800, 900, 999, 1000}
@@ -616,7 +599,7 @@ def _roll_next_target_after(conn, guild_id: int, current_number: int):
         "UPDATE guild_state SET giveaway_target=?, giveaway_mode='random' WHERE guild_id=?",
         (target, guild_id)
     )
-#
+
 class OpenTicketPersistent(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -638,7 +621,7 @@ class OpenTicketPersistent(discord.ui.View):
         if interaction.user.id != winner_id:
             return await interaction.response.send_message("Only the winner can open this ticket.", ephemeral=True)
 
-        m_prize = re.search(r"Winner:\s*<@\d+>\s*—\s*(.+?)\s", desc)
+        m_prize = re.search(r"Winner:\s*<@\d+>\s*—\s*(.+?)\s*(?:\n|$)", desc)
         prize = (m_prize.group(1).strip() if m_prize else "🎁 Surprise Gift")
 
         name = f"ticket-{interaction.user.name.lower()}-{n_hit}"
@@ -723,18 +706,18 @@ async def create_winner_ticket(
     await chan.send(embed=em)
     return chan
 
-
-
 def ensure_giveaway_target(gid: int):
     """Only re-arm if target is missing or already passed."""
     with db() as conn:
         row = conn.execute(
-            "SELECT current_number, giveaway_target FROM guild_state WHERE guild_id=?", (gid,)
+            "SELECT current_number, giveaway_target FROM guild_state WHERE guild_id=?",
+            (gid,)
         ).fetchone()
         if row["giveaway_target"] is None or row["giveaway_target"] < row["current_number"]:
             _roll_next_target_after(conn, gid, row["current_number"])
             return conn.execute(
-                "SELECT giveaway_target FROM guild_state WHERE guild_id=?", (gid,)
+                "SELECT giveaway_target FROM guild_state WHERE guild_id=?",
+                (gid,)
             ).fetchone()["giveaway_target"]
         return row["giveaway_target"]
 
@@ -911,7 +894,6 @@ async def on_message(message: discord.Message):
             last_count_activity[gid] = now
         return  # do NOT treat as a counting attempt
 
-    # numbers-only extract (or loose: number must be at start)
     # === MODE SWITCH: numbers | letters ===
     mode = (st.get("count_mode") if isinstance(st, dict) else st["count_mode"]) or "numbers"
     mode = mode.lower()
@@ -1006,14 +988,10 @@ async def on_message(message: discord.Message):
         _wrong_streak[(message.guild.id, message.channel.id, message.author.id)] = 0
         wrong_entries[message.guild.id] = 0
 
-        # Numbers-only extras (milestones, maths facts, giveaways, etc.) are skipped in letters mode.
-        # You can add letter milestones if you fancy; keeping minimal/surgical.
-                # --- giveaway: letters also advance hidden numeric steps ---
+        # --- giveaway: letters also advance hidden numeric steps ---
         try:
-            # step that was just reached (we computed it before bump)
-            # If you don't still have 'st' here, re-fetch it.
             st_now = get_state(message.guild.id)
-            reached_step = st_now["current_number"]  # we already incremented in bump_ok_letter
+            reached_step = st_now["current_number"]  # incremented inside bump_ok_letter
             ensure_giveaway_target(message.guild.id)
 
             target_now = st_now["giveaway_target"]
@@ -1043,7 +1021,6 @@ async def on_message(message: discord.Message):
         except Exception:
             pass
 
-
         return  # do not fall through to numbers logic
 
     # === numbers mode (original logic) ===
@@ -1059,7 +1036,6 @@ async def on_message(message: discord.Message):
         with contextlib.suppress(Exception):
             await message.reply(banter)
         return
-
 
     expected = st["current_number"] + 1
     last_user = st["last_user_id"]
@@ -1079,16 +1055,12 @@ async def on_message(message: discord.Message):
         else:
             del locks[message.author.id]
 
-    # --- WRONG GUESS STREAK: bench after 3 wrong numeric guesses in a row ---
-    # (We track per (guild, channel, user) to avoid cross-channel noise)
-    # NOTE: streak is incremented only on wrong numeric guesses (see below).
-    # Here, just ensure last poster tracker doesn't bench people anymore:
+    # last poster tracker
     if lp["user_id"] == message.author.id:
         lp["count"] += 1
     else:
         lp["user_id"] = message.author.id
         lp["count"] = 1
-    # No bench here; wrong-guess streak handling happens in the wrong-number branch.
 
     # --- rule: no double posts ---
     if last_user == message.author.id:
@@ -1105,7 +1077,6 @@ async def on_message(message: discord.Message):
     if posted != expected:
         mark_wrong(message.guild.id, message.author.id)
 
-        # increment WRONG-GUESS streak for this (guild, channel, user)
         key = (message.guild.id, message.channel.id, message.author.id)
         _wrong_streak[key] += 1
 
@@ -1119,7 +1090,8 @@ async def on_message(message: discord.Message):
             lp["user_id"] = None
             lp["count"] = 0
             return
-        
+
+      
         # fetch bench duration from settings (default 10)
         st_bench = get_state(message.guild.id)
         ban_minutes = int(st_bench["ban_minutes"] if "ban_minutes" in st_bench.keys() and st_bench["ban_minutes"] is not None else 10)
