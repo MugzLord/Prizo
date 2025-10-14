@@ -357,6 +357,22 @@ def get_tourney(guild_id: int):
             FROM tournaments WHERE guild_id=?
         """, (guild_id,)).fetchone()
         if not row:
+
+    import time
+    
+    for _ in range(5):  # retry up to 5 times
+        try:
+            con.execute("INSERT OR IGNORE INTO tournaments(guild_id) VALUES(?)", (guild_id,))
+            con.commit()
+            break
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e):
+                time.sleep(0.2)  # wait 200ms then retry
+                continue
+            else:
+                raise
+
+           
             con.execute("INSERT OR IGNORE INTO tournaments(guild_id) VALUES(?)", (guild_id,))
             con.commit()
             return (0, None, 1000, 5, 0, 1)
