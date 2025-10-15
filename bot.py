@@ -1258,21 +1258,44 @@ class FunCounting(commands.Cog):
     async def count_mode(self, interaction: discord.Interaction, mode: app_commands.Choice[str]):
         if not interaction.user.guild_permissions.manage_guild:
             return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
-        val = mode.value.lower()
-        with db() as conn:
-            conn.execute("UPDATE guild_state SET count_mode=? WHERE guild_id=?", (val, interaction.guild_id))
-            if val == "letters":
-                is_active, ends_at, *_ = get_tourney(interaction.guild_id)
-                start_letter = "Z" if (is_active and parse_iso(ends_at) and now_utc() < parse_iso(ends_at)) else "A"
-                conn.execute("UPDATE guild_state SET current_letter=?, last_user_id=NULL, guild_streak=0 WHERE guild_id=?", (start_letter, interaction.guild_id))
 
-            else:
-                # keep numeric start/current as-is; just clear last_user to avoid double-post traps
-                conn.execute("UPDATE guild_state SET last_user_id=NULL, guild_streak=0 WHERE guild_id=?", (interaction.guild_id,))
-        msg = "🔢 Mode set to **numbers**. Next is **{}**.".format(get_state(interaction.guild_id)["current_number"] + 1)
-        if val == "letters":
-            msg = f"🔤 Mode set to **letters**. Next is **{start_letter}**."
-        await interaction.response.send_message(msg, ephemeral=True)
+        # Prevent the 3s timeout while we touch the DB.
+        await interaction.response.defer(ephemeral=True, thinking=False)
+
+        val = (mode.value or "numbers").lower()
+        msg = None
+
+        try:
+            with db() as conn:
+                conn.execute("UPDATE guild_state SET count_mode=? WHERE guild_id=?", (val, interaction.guild_id))
+                if val == "letters":
+                    # Start direction-aware (Z when tourney active, else A)
+                    is_active, ends_at, *_ = get_tourney(interaction.guild_id)
+                    end_dt = parse_iso(ends_at)
+                    start_letter = "Z" if (is_active and end_dt and now_utc() < end_dt) else "A"
+                    conn.execute(
+                        "UPDATE guild_state SET current_letter=?, last_user_id=NULL, guild_streak=0 WHERE guild_id=?",
+                        (start_letter, interaction.guild_id)
+                    )
+                    msg = f"🔤 Mode set to **letters**. Next is **{start_letter}**."
+                else:
+                    # Numbers mode: keep current, just clear last_user & streak
+                    conn.execute("UPDATE guild_state SET last_user_id=NULL, guild_streak=0 WHERE guild_id=?", (interaction.guild_id,))
+                    st_now = get_state(interaction.guild_id)
+                    next_n = int(st_now["current_number"]) + 1
+                    msg = f"🔢 Mode set to **numbers**. Next is **{next_n}**."
+
+        except Exception as e:
+            # Log to console and tell the user nicely
+            print(f"[count_mode] error: {type(e).__name__}: {e}")
+            return await interaction.followup.send(
+                f"❌ Couldn’t switch mode: **{type(e).__name__}** — {e}", ephemeral=True
+            )
+
+        # Happy path
+        await interaction.followup.send(msg, ephemeral=True)
+
+    
     @app_commands.command(name="numbers_only", description="Toggle numbers-only mode.")
     @app_commands.guild_only()
     async def numbers_only_cmd(self, interaction: discord.Interaction, on: bool):
