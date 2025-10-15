@@ -24,12 +24,12 @@ def parse_reward_token(token: str):
     s = str(token).strip().lower()
     if s.isdigit():
         return ('credits', int(s))
-    m = re.fullmatch(r'(\d+)\s*k', s)
+    m = re.fullmatch(r'(\\d+)\\s*k', s)
     if m:
         return ('credits', int(m.group(1)) * 1000)
     if s == 'xwl':
         return ('xwl', 1)
-    m = re.fullmatch(r'(\d+)\s*xwl', s)
+    m = re.fullmatch(r'(\\d+)\\s*xwl', s)
     if m:
         return ('xwl', int(m.group(1)))
     raise ValueError("Reward must be an integer (e.g., 1000), '2k', 'xWL', or '3xWL'.")
@@ -218,7 +218,7 @@ def _touch_user(conn, gid: int, uid: int, correct=0, wrong=0, streak_best=None, 
         conn.execute("""
         UPDATE user_stats
         SET correct_counts = correct_counts + ?,
-            wrong_counts   = wrong_counts + ?,
+            wrong_counts   = ? + wrong_counts,
             streak_best    = ?,
             badges         = ?,
             last_updated   = ?
@@ -519,8 +519,8 @@ def _next_idle_line(gid: int) -> str:
     return bucket.pop()
 
 # === Letters mode helpers ===
-LETTER_STRICT = re.compile(r"^\s*([A-Za-z])\s*$")
-LETTER_LOOSE  = re.compile(r"^\s*([A-Za-z])")
+LETTER_STRICT = re.compile(r"^\\s*([A-Za-z])\\s*$")
+LETTER_LOOSE  = re.compile(r"^\\s*([A-Za-z])")
 
 def extract_letter(text: str, strict: bool) -> str | None:
     m = (LETTER_STRICT if strict else LETTER_LOOSE).match(text or "")
@@ -556,7 +556,7 @@ def bump_ok_letter(gid: int, uid: int, expected_letter: str):
         new_streak = st["guild_streak"] + 1
         best = max(new_streak, st["best_guild_streak"])
         nxt = next_letter_dir(gid, expected_letter)   # ← direction-aware
-        conn.execute("""
+        conn.execute(\"""
             UPDATE guild_state
             SET current_letter=?,
                 current_number = current_number + 1,   -- 🔒 keep numeric step moving for giveaways
@@ -564,7 +564,7 @@ def bump_ok_letter(gid: int, uid: int, expected_letter: str):
                 guild_streak=?,
                 best_guild_streak=?
             WHERE guild_id=?;
-        """, (nxt, uid, new_streak, best, gid))
+        \""", (nxt, uid, new_streak, best, gid))
         _touch_user(conn, gid, uid, correct=1, streak_best=new_streak)
 
 def reset_letters(gid: int, start: str = "A"):
@@ -611,8 +611,8 @@ class OpenTicketPersistent(discord.ui.View):
         emb = interaction.message.embeds[0]
         desc = (emb.description or "")
 
-        m_user = re.search(r"Winner:\s*<@(\d+)>", desc)
-        m_num  = re.search(r"(?:Target:?|Number)\s*\*{2}(\d+)\*{2}", desc)
+        m_user = re.search(r"Winner:\\s*<@(\\d+)>", desc)
+        m_num  = re.search(r"(?:Target:?|Number)\\s*\\*{2}(\\d+)\\*{2}", desc)
         if not (m_user and m_num):
             return await interaction.response.send_message("Couldn't read winner/number from this message.", ephemeral=True)
 
@@ -621,7 +621,7 @@ class OpenTicketPersistent(discord.ui.View):
         if interaction.user.id != winner_id:
             return await interaction.response.send_message("Only the winner can open this ticket.", ephemeral=True)
 
-        m_prize = re.search(r"Winner:\s*<@\d+>\s*—\s*(.+?)\s*(?:\n|$)", desc)
+        m_prize = re.search(r"Winner:\\s*<@\\d+>\\s*—\\s*(.+?)\\s*(?:\\n|$)", desc)
         prize = (m_prize.group(1).strip() if m_prize else "🎁 Surprise Gift")
 
         name = f"ticket-{interaction.user.name.lower()}-{n_hit}"
@@ -693,11 +693,11 @@ async def create_winner_ticket(
     em = discord.Embed(
         title="🎟️ Prize Ticket",
         description=(
-            f"🎟 Ticket for {winner.mention}\n\n"
-            f"Please provide:\n"
-            f"• **IMVU Account Link**\n"
-            f"• **Lucky Number Won:** {n_hit}\n"
-            f"• **Prize Claim Notes**\n\n"
+            f"🎟 Ticket for {winner.mention}\\n\\n"
+            f"Please provide:\\n"
+            f"• **IMVU Account Link**\\n"
+            f"• **Lucky Number Won:** {n_hit}\\n"
+            f"• **Prize Claim Notes**\\n\\n"
             "Mikey.Moon will review and deliver your prize."
         ),
         colour=discord.Colour.green()
@@ -726,10 +726,10 @@ async def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached
 
     # ----- phase 1: read state & decide winner (no side-effects yet) -----
     with db() as conn:
-        st = conn.execute("""
+        st = conn.execute(\"""
             SELECT giveaway_target, last_giveaway_n, giveaway_prize, giveaway_mode
             FROM guild_state WHERE guild_id=?
-        """,(gid,)).fetchone()
+        \""",(gid,)).fetchone()
 
         target = st["giveaway_target"]
         mode = (st["giveaway_mode"] or "random").lower()
@@ -756,10 +756,10 @@ async def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached
             conn.execute("COMMIT")
             return False
 
-        conn.execute("""
+        conn.execute(\"""
             INSERT INTO winners (guild_id, channel_id, user_id, prize, n_won_at, created_at)
             VALUES (?,?,?,?,?,?)
-        """, (gid, message.channel.id, chosen_winner_id, prize, reached_n, datetime.utcnow().isoformat()))
+        \""", (gid, message.channel.id, chosen_winner_id, prize, reached_n, datetime.utcnow().isoformat()))
 
         if mode == "fixed":
             conn.execute(
@@ -781,10 +781,10 @@ async def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached
     embed = discord.Embed(
         title=title,
         description=(
-            f"Target **{reached_n}** hit!\n"
-            f"Winner: {winner_mention} — {prize} 🥳\n\n"
-            f"**{winner_banter}**\n"
-            f"{claim_text}\n\n"
+            f"Target **{reached_n}** hit!\\n"
+            f"Winner: {winner_mention} — {prize} 🥳\\n\\n"
+            f"**{winner_banter}**\\n"
+            f"{claim_text}\\n\\n"
             f"*New jackpot is armed… keep counting.*"
         ),
         colour=discord.Colour.gold()
@@ -798,8 +798,8 @@ async def try_giveaway_draw(bot: commands.Bot, message: discord.Message, reached
     try:
         winner_user = message.guild.get_member(chosen_winner_id) or await bot.fetch_user(chosen_winner_id)
         await winner_user.send(
-            f"🎉 You won in {message.channel.mention} at **{reached_n}**!\n"
-            f"Prize: {prize}\n"
+            f"🎉 You won in {message.channel.mention} at **{reached_n}**!\\n"
+            f"Prize: {prize}\\n"
             f"Use the **Open Ticket** button in the channel to claim."
         )
     except Exception:
@@ -1031,8 +1031,8 @@ async def on_message(message: discord.Message):
             return  # do not fall through to numbers logic
 
         # === numbers mode (original logic) ===
-        INT_STRICT = re.compile(r"^\s*(-?\d+)\s*$")
-        INT_LOOSE  = re.compile(r"^\s*(-?\d+)\b")
+        INT_STRICT = re.compile(r"^\\s*(-?\\d+)\\s*$")
+        INT_LOOSE  = re.compile(r"^\\s*(-?\\d+)\\b")
         def extract_int(text: str, strict: bool):
             m = (INT_STRICT if strict else INT_LOOSE).match(text)
             return int(m.group(1)) if m else None
@@ -1119,7 +1119,7 @@ async def on_message(message: discord.Message):
                 lp["count"] = 0
                 return
 
-        # correct but out-of-order block separation kept identical
+            # correct but out-of-order block separation kept identical
             await safe_react(message, "❌")
             banter = pick_banter("wrong") or "Oof—maths says ‘nah’. 📏"
             with contextlib.suppress(Exception):
@@ -1336,7 +1336,7 @@ class FunCounting(commands.Cog):
                 name = f"<@{r['user_id']}>"
             medal = "👑" if i == 1 else ("🥈" if i == 2 else ("🥉" if i == 3 else " "))
             lines.append(f"{medal} **#{i}** {name} — **{r['correct_counts']}** correct • 🏅 {r['badges']}")
-        em = discord.Embed(title="📈 Top Counters", description="\n".join(lines), colour=discord.Colour.blurple())
+        em = discord.Embed(title="📈 Top Counters", description="\\n".join(lines), colour=discord.Colour.blurple())
         await interaction.response.send_message(embed=em)
 
     @app_commands.command(name="stats", description="See counting stats for a user.")
@@ -1376,18 +1376,18 @@ class FunCounting(commands.Cog):
         if range_max < range_min: range_max = range_min
         with db() as conn:
             conn.execute("INSERT OR IGNORE INTO guild_state (guild_id) VALUES (?)", (interaction.guild_id,))
-            conn.execute("""
+            conn.execute(\"""
                 UPDATE guild_state
                 SET giveaway_range_min=?,
                     giveaway_range_max=?,
                     giveaway_prize=?,
                     giveaway_mode='random'
                 WHERE guild_id=?
-            """, (range_min, range_max, prize, interaction.guild_id))
-            cur = conn.execute("""
+            \""", (range_min, range_max, prize, interaction.guild_id))
+            cur = conn.execute(\"""
                 SELECT COALESCE(current_number, 0) AS current_number
                 FROM guild_state WHERE guild_id=?
-            """, (interaction.guild_id,)).fetchone()
+            \""", (interaction.guild_id,)).fetchone()
             _roll_next_target_after(conn, interaction.guild_id, cur["current_number"])
 
         await interaction.response.send_message(
@@ -1431,10 +1431,10 @@ class FunCounting(commands.Cog):
         if not interaction.user.guild_permissions.manage_guild:
             return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
         with db() as conn:
-            st = conn.execute("""
+            st = conn.execute(\"""
             SELECT current_number, giveaway_target, giveaway_range_min, giveaway_range_max, last_giveaway_n, giveaway_prize, ticket_url, giveaway_mode
             FROM guild_state WHERE guild_id=?
-            """,(interaction.guild_id,)).fetchone()
+            \""",(interaction.guild_id,)).fetchone()
         mode = (st["giveaway_mode"] or "random").lower()
         turl = st["ticket_url"] or "— not set —"
         lines = [
@@ -1450,7 +1450,7 @@ class FunCounting(commands.Cog):
             lines.append(f"- ≈Next in **{max(0, left)}** steps")
         else:
             lines.append(f"- 🎯 Lucky number: **hidden ahead**")
-        await interaction.response.send_message("\n".join(lines), ephemeral=True)
+        await interaction.response.send_message("\\n".join(lines), ephemeral=True)
 
     @app_commands.command(name="giveaway_now", description="Instant draw among recent correct counters.")
     @app_commands.describe(window="How many recent correct counts to include (default 80)")
@@ -1462,11 +1462,11 @@ class FunCounting(commands.Cog):
         with db() as conn:
             st = conn.execute("SELECT current_number, giveaway_prize FROM guild_state WHERE guild_id=?", (gid,)).fetchone()
             current_n = st["current_number"]
-            rows = conn.execute("""
+            rows = conn.execute(\"""
             SELECT DISTINCT user_id FROM count_log
             WHERE guild_id=? AND n>? AND n<=?
             ORDER BY n DESC
-            """,(gid, max(0, current_n - window), current_n)).fetchall()
+            \""",(gid, max(0, current_n - window), current_n)).fetchall()
             pool = [r["user_id"] for r in rows]
         if not pool:
             return await interaction.response.send_message("No recent participants to draw from.", ephemeral=True)
@@ -1477,7 +1477,7 @@ class FunCounting(commands.Cog):
 
         em = discord.Embed(
             title="⚡ Instant Giveaway",
-            description=f"Winner: <@{winner}> — {st['giveaway_prize']} 🎉\n{claim_text}",
+            description=f"Winner: <@{winner}> — {st['giveaway_prize']} 🎉\\n{claim_text}",
             colour=discord.Colour.purple()
         )
         if ticket_url:
@@ -1504,7 +1504,7 @@ class FunCounting(commands.Cog):
             current_n = row["current_number"]
             delta = random.randint(1, number)
             lucky_abs = current_n + delta
-            conn.execute("""
+            conn.execute(\"""
                 UPDATE guild_state
                 SET giveaway_target=?,
                     giveaway_prize=?,
@@ -1513,10 +1513,10 @@ class FunCounting(commands.Cog):
                     winner_user_id=NULL,
                     giveaway_fixed_max=?
                 WHERE guild_id=?
-            """, (lucky_abs, prize, number, interaction.guild_id))
+            \""", (lucky_abs, prize, number, interaction.guild_id))
 
         await interaction.response.send_message(
-            f"🎲 Lucky number armed somewhere in the next **{number}** counts.\n"
+            f"🎲 Lucky number armed somewhere in the next **{number}** counts.\\n"
             f"First to hit it wins **{prize}**.",
             ephemeral=True
         )
@@ -1569,7 +1569,7 @@ class FunCounting(commands.Cog):
 
         if not cat:
             lines.append("No ticket category set or I can't see it. Use /set_ticket_category.")
-            return await interaction.response.send_message("\n".join(lines), ephemeral=True)
+            return await interaction.response.send_message("\\n".join(lines), ephemeral=True)
 
         p = cat.permissions_for(me)
         lines.append(f"Category perms ({cat.name}): manage_channels={p.manage_channels}, view_channel={p.view_channel}, send_messages={p.send_messages}")
@@ -1583,7 +1583,7 @@ class FunCounting(commands.Cog):
         except Exception as e:
             lines.append(f"Create/delete test: ❌ {type(e).__name__}: {e}")
 
-        await interaction.response.send_message("\n".join(lines), ephemeral=True)
+        await interaction.response.send_message("\\n".join(lines), ephemeral=True)
 
     @app_commands.command(name="sync", description="Force re-sync slash commands (admin).")
     @app_commands.guild_only()
@@ -1639,8 +1639,8 @@ class FunCounting(commands.Cog):
         )
         reset_tourney_wins(g.id)
         await interaction.response.send_message(
-            f"🏁 **Prizo Tournament started!**\n"
-            f"Duration: **{duration}m** • Reward: **{reward_label}** • Cap: **{cap} jackpots**\n"
+            f"🏁 **Prizo Tournament started!**\\n"
+            f"Duration: **{duration}m** • Reward: **{reward_label}** • Cap: **{cap} jackpots**\\n"
             f"_Jackpots after cap will be {'silent' if silent else 'announced'}._"
         )
 
@@ -1653,8 +1653,8 @@ class FunCounting(commands.Cog):
         winners = top_wins(g.id, 10)
         medal = ["🥇","🥈","🥉"]
         lines = [(f"{medal[i] if i < 3 else f'{i+1}.'} <@{uid}> — {w} win(s)") for i,(uid,w) in enumerate(winners)]
-        summary = "\n".join(lines) if lines else "_No winners logged._"
-        await interaction.response.send_message(f"🏁 **Prizo Tournament** ended.\n{summary}")
+        summary = "\\n".join(lines) if lines else "_No winners logged._"
+        await interaction.response.send_message(f"🏁 **Prizo Tournament** ended.\\n{summary}")
 
     @app_commands.command(name="tournament_status", description="Show current tournament status")
     async def tournament_status(self, interaction: discord.Interaction):
@@ -1670,7 +1670,7 @@ class FunCounting(commands.Cog):
         reward_line = f"{fixed_reward:,} (credits or xWL amount)"
 
         await interaction.response.send_message(
-            f"🏁 Tournament active — ends in **~{mins}m**\n"
+            f"🏁 Tournament active — ends in **~{mins}m**\\n"
             f"Reward (per jackpot): **{reward_line}** • Cap: **{jp_hit}/{max_jp}** • After cap: **{'silent' if silent else 'announce'}**.",
             ephemeral=False
         )
@@ -1679,7 +1679,7 @@ class FunCounting(commands.Cog):
     @app_commands.guild_only()
     async def banter_version(self, interaction: discord.Interaction):
         await interaction.response.send_message(
-            f"banter.json v**{BANTER_VER}**\npath: `{BANTER_PATH}`\ncounts: {_banter_summary()}",
+            f"banter.json v**{BANTER_VER}**\\npath: `{BANTER_PATH}`\\ncounts: {_banter_summary()}",
             ephemeral=True
         )
 
