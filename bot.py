@@ -859,60 +859,197 @@ async def banter_file_watch():
 
 @bot.event
 async def on_message(message: discord.Message):
-    if message.author.bot or not message.guild:
-        return
+    try:
+        if message.author.bot or not message.guild:
+            return
 
-    st = get_state(message.guild.id)
-    if not st["channel_id"] or message.channel.id != st["channel_id"]:
-        return
+        st = get_state(message.guild.id)
+        if not st["channel_id"] or message.channel.id != st["channel_id"]:
+            return
 
-    # hard pause: ignore counting & validations while paused
-    if int(st.get("count_paused") or 0) == 1:
-        return
+        # hard pause: ignore counting & validations while paused
+        try:
+            paused = st["count_paused"] if "count_paused" in st.keys() and st["count_paused"] is not None else 0
+        except Exception:
+            paused = 0
+        if int(paused) == 1:
+            return
 
-    # PATCH: refresh idle timer as soon as something happens in counting channel
-    gid = message.guild.id
-    last_count_activity[gid] = datetime.now(timezone.utc)
+        # PATCH: refresh idle timer as soon as something happens in counting channel
+        gid = message.guild.id
+        last_count_activity[gid] = datetime.now(timezone.utc)
 
-    # PATCH: allow replies to the last AI banter only (keeps channel numbers-only otherwise)
-    if message.reference and message.reference.message_id == last_ai_message[gid]:
-        if not message.author.bot:
-            now = datetime.now(timezone.utc)
-            # optional: guard tournament/pause here if you have flags
-            if ai_reply_counts[gid] < AI_MAX_REPLIES_PER_BANTER and now >= ai_reply_next_allowed[gid]:
-                reply_pool = (
-                    BANTER.get("idle_banter_replies")
-                    or BANTER.get("idle_replies")
-                    or BANTER.get("idle_banter")
-                    or ["Alright, back to counting."]
-                )
-                line = random.choice(reply_pool)
+        # PATCH: allow replies to the last AI banter only (keeps channel numbers-only otherwise)
+        if message.reference and message.reference.message_id == last_ai_message[gid]:
+            if not message.author.bot:
+                now = datetime.now(timezone.utc)
+                # optional: guard tournament/pause here if you have flags
+                if ai_reply_counts[gid] < AI_MAX_REPLIES_PER_BANTER and now >= ai_reply_next_allowed[gid]:
+                    reply_pool = (
+                        BANTER.get("idle_banter_replies")
+                        or BANTER.get("idle_replies")
+                        or BANTER.get("idle_banter")
+                        or ["Alright, back to counting."]
+                    )
+                    line = random.choice(reply_pool)
+                    with contextlib.suppress(Exception):
+                        await message.channel.send(f"🤖 {line}", reference=message)
+                    ai_reply_counts[gid] += 1
+                    ai_reply_next_allowed[gid] = now + timedelta(seconds=AI_REPLY_COOLDOWN_SEC)
+                last_count_activity[gid] = now
+            return  # do NOT treat as a counting attempt
+
+        # === MODE SWITCH: numbers | letters ===
+        mode = (st["count_mode"] or "numbers").lower()
+
+        if mode == "letters":
+            # Letters-mode parsing (strict=single letter when numbers_only=ON)
+            posted_letter = extract_letter(message.content, strict=bool(st["numbers_only"]))
+            if posted_letter is None:
+                banter = (pick_banter("nonnumeric") or "Letters only in here, mate.").replace("{user}", message.author.mention)
                 with contextlib.suppress(Exception):
-                    await message.channel.send(f"🤖 {line}", reference=message)
-                ai_reply_counts[gid] += 1
-                ai_reply_next_allowed[gid] = now + timedelta(seconds=AI_REPLY_COOLDOWN_SEC)
-            last_count_activity[gid] = now
-        return  # do NOT treat as a counting attempt
+                    await message.reply(banter)
+                return
 
-    # === MODE SWITCH: numbers | letters ===
-    mode = (st.get("count_mode") if isinstance(st, dict) else st["count_mode"]) or "numbers"
-    mode = mode.lower()
+            expected_letter = (st["current_letter"] or "A").upper()
+            last_user = st["last_user_id"]
 
-    if mode == "letters":
-        # Letters-mode parsing (strict=single letter when numbers_only=ON)
-        posted_letter = extract_letter(message.content, strict=bool(st["numbers_only"]))
-        if posted_letter is None:
-            banter = (pick_banter("nonnumeric") or "Letters only in here, mate.").replace("{user}", message.author.mention)
+            # per-guild runtime trackers (re-use your existing structures)
+            gid = message.guild.id
+            locks = bot.locked_players.setdefault(gid, {})
+            lp = bot.last_poster.setdefault(gid, {"user_id": None, "count": 0})
+
+            # --- timeout check ---
+            now = datetime.utcnow()
+            if message.author.id in locks:
+                if now < locks[message.author.id]:
+                    with contextlib.suppress(Exception):
+                        await message.delete()
+                    return
+                else:
+                    del locks[message.author.id]
+
+            # last poster tracker
+            if lp["user_id"] == message.author.id:
+                lp["count"] += 1
+            else:
+                lp["user_id"] = message.author.id
+                lp["count"] = 1
+
+            # --- rule: no double posts ---
+            if last_user == message.author.id:
+                mark_wrong(message.guild.id, message.author.id)
+                await safe_react(message, "⛔")
+                banter = (pick_banter("wrong") or "Not two in a row. Behave. 😅").replace("{n}", expected_letter)
+                with contextlib.suppress(Exception):
+                    await message.reply(
+                        f"Not two in a row, {message.author.mention}. {banter} Next is **{expected_letter}** for someone else."
+                    )
+                return
+
+            # --- must match expected letter ---
+            if posted_letter != expected_letter:
+                mark_wrong(message.guild.id, message.author.id)
+
+                key = (message.guild.id, message.channel.id, message.author.id)
+                _wrong_streak[key] += 1
+
+                wrong_entries[message.guild.id] += 1
+                if wrong_entries[message.guild.id] >= 5:
+                    wrong_entries[message.guild.id] = 0
+                    reset_letters(message.guild.id, "A")
+                    with contextlib.suppress(Exception):
+                        await message.channel.send("⚠️ Five wrong entries — starting again at **A**. Keep it tidy, team.")
+                    lp["user_id"] = None
+                    lp["count"] = 0
+                    return
+
+                st_bench = get_state(message.guild.id)
+                try:
+                    ban_minutes = int(st_bench["ban_minutes"])
+                except Exception:
+                    ban_minutes = 10
+
+                if _wrong_streak[key] >= 3:
+                    _wrong_streak[key] = 0
+                    locks[message.author.id] = now + timedelta(minutes=ban_minutes)
+                    roast = pick_banter("roast") or "Have a sit-down and recite the alphabet. 🛋️"
+                    with contextlib.suppress(Exception):
+                        await safe_react(message, "⛔")
+                        await message.reply(
+                            f"🚫 {message.author.mention} three wrong on the trot — benched for **{ban_minutes} minutes**. {roast}"
+                        )
+                    lp["user_id"] = None
+                    lp["count"] = 0
+                    return
+
+                await safe_react(message, "❌")
+                banter = pick_banter("wrong") or "Oof—phonics says ‘nah’. 🔤"
+                with contextlib.suppress(Exception):
+                    await message.reply(f"{banter} Next up is **{expected_letter}**.")
+                return
+
+            # --- success in letters mode ---
+            bump_ok_letter(message.guild.id, message.author.id, expected_letter)
+            await safe_react(message, "✅")
+            _wrong_streak[(message.guild.id, message.channel.id, message.author.id)] = 0
+            wrong_entries[message.guild.id] = 0
+
+            # --- giveaway: letters also advance hidden numeric steps ---
+            try:
+                st_now = get_state(message.guild.id)
+                reached_step = st_now["current_number"]  # incremented inside bump_ok_letter
+                ensure_giveaway_target(message.guild.id)
+
+                target_now = st_now["giveaway_target"]
+                if target_now is not None and int(target_now) == int(reached_step):
+                    did_announce = await try_giveaway_draw(bot, message, reached_step)
+
+                    # tournament hook (same as numbers)
+                    is_active, ends_at, fixed_reward, max_jp, jp_hit, silent = get_tourney(message.guild.id)
+                    if is_active and parse_iso(ends_at) and now_utc() < parse_iso(ends_at):
+                        if jp_hit < max_jp:
+                            add_tourney_win(message.guild.id, message.author.id, 1)
+                            set_tourney(message.guild.id, jackpots_hit=jp_hit + 1)
+                            await message.channel.send(
+                                f"🏁 Tournament win for {message.author.mention}! (+1) • {fixed_reward} creds"
+                            )
+                        elif not silent:
+                            await message.channel.send(
+                                f"{message.author.mention} hit another jackpot, "
+                                f"but the tournament cap of {max_jp} is already reached!"
+                            )
+
+                    with contextlib.suppress(Exception):
+                        await safe_react(message, "🎉")
+                    await message.channel.send(
+                        f"🎉 {message.author.mention} bagged the jackpot! New jackpot is armed… keep going through the alphabet."
+                    )
+            except Exception:
+                pass
+
+            return  # do not fall through to numbers logic
+
+        # === numbers mode (original logic) ===
+        INT_STRICT = re.compile(r"^\s*(-?\d+)\s*$")
+        INT_LOOSE  = re.compile(r"^\s*(-?\d+)\b")
+        def extract_int(text: str, strict: bool):
+            m = (INT_STRICT if strict else INT_LOOSE).match(text)
+            return int(m.group(1)) if m else None
+
+        posted = extract_int(message.content, strict=bool(st["numbers_only"]))
+        if posted is None:
+            banter = (pick_banter("nonnumeric") or "Numbers only in here, mate.").replace("{user}", message.author.mention)
             with contextlib.suppress(Exception):
                 await message.reply(banter)
             return
 
-        expected_letter = (st["current_letter"] or "A").upper()
+        expected = st["current_number"] + 1
         last_user = st["last_user_id"]
 
-        # per-guild runtime trackers (re-use your existing structures)
+        # per-guild runtime trackers
         gid = message.guild.id
-        locks = bot.locked_players.setdefault(gid, {})
+        locks = bot.locked_players.setdefault(gid, {})               # {user_id: unlock_dt}
         lp = bot.last_poster.setdefault(gid, {"user_id": None, "count": 0})
 
         # --- timeout check ---
@@ -936,260 +1073,134 @@ async def on_message(message: discord.Message):
         if last_user == message.author.id:
             mark_wrong(message.guild.id, message.author.id)
             await safe_react(message, "⛔")
-            banter = (pick_banter("wrong") or "Not two in a row. Behave. 😅").replace("{n}", expected_letter)
+            banter = (pick_banter("wrong") or "Not two in a row. Behave. 😅").replace("{n}", str(expected))
             with contextlib.suppress(Exception):
                 await message.reply(
-                    f"Not two in a row, {message.author.mention}. {banter} Next is **{expected_letter}** for someone else."
+                    f"Not two in a row, {message.author.mention}. {banter} Next is **{expected}** for someone else."
                 )
             return
 
-        # --- must match expected letter ---
-        if posted_letter != expected_letter:
+        # --- rule: must be exact next number ---
+        if posted != expected:
             mark_wrong(message.guild.id, message.author.id)
 
             key = (message.guild.id, message.channel.id, message.author.id)
             _wrong_streak[key] += 1
 
+            # PATCH: per-guild wrong entry counter (reset after 5 wrong entries)
             wrong_entries[message.guild.id] += 1
             if wrong_entries[message.guild.id] >= 5:
                 wrong_entries[message.guild.id] = 0
-                reset_letters(message.guild.id, "A")
+                reset_count(message.guild.id)
                 with contextlib.suppress(Exception):
-                    await message.channel.send("⚠️ Five wrong entries — starting again at **A**. Keep it tidy, team.")
+                    await message.channel.send("⚠️ Five wrong entries — counting has been reset to **1**. Keep it tidy, team.")
                 lp["user_id"] = None
                 lp["count"] = 0
                 return
 
+            # fetch bench duration from settings (default 10)
             st_bench = get_state(message.guild.id)
-            ban_minutes = int(st_bench["ban_minutes"] if "ban_minutes" in st_bench.keys() and st_bench["ban_minutes"] is not None else 10)
+            try:
+                ban_minutes = int(st_bench["ban_minutes"])
+            except Exception:
+                ban_minutes = 10
 
             if _wrong_streak[key] >= 3:
                 _wrong_streak[key] = 0
                 locks[message.author.id] = now + timedelta(minutes=ban_minutes)
-                roast = pick_banter("roast") or "Have a sit-down and recite the alphabet. 🛋️"
+                roast = pick_banter("roast") or "Have a sit-down and count sheep, not numbers. 🛋️"
                 with contextlib.suppress(Exception):
                     await safe_react(message, "⛔")
                     await message.reply(
                         f"🚫 {message.author.mention} three wrong on the trot — benched for **{ban_minutes} minutes**. {roast}"
                     )
+                # also clear last-poster to avoid accidental follow-ups counting
                 lp["user_id"] = None
                 lp["count"] = 0
                 return
 
+        # correct but out-of-order block separation kept identical
             await safe_react(message, "❌")
-            banter = pick_banter("wrong") or "Oof—phonics says ‘nah’. 🔤"
+            banter = pick_banter("wrong") or "Oof—maths says ‘nah’. 📏"
             with contextlib.suppress(Exception):
-                await message.reply(f"{banter} Next up is **{expected_letter}**.")
+                await message.reply(f"{banter} Next up is **{expected}**.")
             return
 
-        # --- success in letters mode ---
-        bump_ok_letter(message.guild.id, message.author.id, expected_letter)
+        # --- success! ---
+        bump_ok(message.guild.id, message.author.id)
         await safe_react(message, "✅")
+        # reset wrong-guess streak on correct hit
         _wrong_streak[(message.guild.id, message.channel.id, message.author.id)] = 0
+        # PATCH: reset guild-wide wrong counter on correct hit
         wrong_entries[message.guild.id] = 0
 
-        # --- giveaway: letters also advance hidden numeric steps ---
-        try:
-            st_now = get_state(message.guild.id)
-            reached_step = st_now["current_number"]  # incremented inside bump_ok_letter
-            ensure_giveaway_target(message.guild.id)
-
-            target_now = st_now["giveaway_target"]
-            if target_now is not None and int(target_now) == int(reached_step):
-                did_announce = await try_giveaway_draw(bot, message, reached_step)
-
-                # tournament hook (same as numbers)
-                is_active, ends_at, fixed_reward, max_jp, jp_hit, silent = get_tourney(message.guild.id)
-                if is_active and parse_iso(ends_at) and now_utc() < parse_iso(ends_at):
-                    if jp_hit < max_jp:
-                        add_tourney_win(message.guild.id, message.author.id, 1)
-                        set_tourney(message.guild.id, jackpots_hit=jp_hit + 1)
-                        await message.channel.send(
-                            f"🏁 Tournament win for {message.author.mention}! (+1) • {fixed_reward} creds"
-                        )
-                    elif not silent:
-                        await message.channel.send(
-                            f"{message.author.mention} hit another jackpot, "
-                            f"but the tournament cap of {max_jp} is already reached!"
-                        )
-
-                with contextlib.suppress(Exception):
-                    await safe_react(message, "🎉")
-                await message.channel.send(
-                    f"🎉 {message.author.mention} bagged the jackpot! New jackpot is armed… keep going through the alphabet."
-                )
-        except Exception:
-            pass
-
-        return  # do not fall through to numbers logic
-
-    # === numbers mode (original logic) ===
-    INT_STRICT = re.compile(r"^\s*(-?\d+)\s*$")
-    INT_LOOSE  = re.compile(r"^\s*(-?\d+)\b")
-    def extract_int(text: str, strict: bool):
-        m = (INT_STRICT if strict else INT_LOOSE).match(text)
-        return int(m.group(1)) if m else None
-
-    posted = extract_int(message.content, strict=bool(st["numbers_only"]))
-    if posted is None:
-        banter = (pick_banter("nonnumeric") or "Numbers only in here, mate.").replace("{user}", message.author.mention)
+        # log for giveaway eligibility
         with contextlib.suppress(Exception):
-            await message.reply(banter)
-        return
+            log_correct_count(message.guild.id, expected, message.author.id)
 
-    expected = st["current_number"] + 1
-    last_user = st["last_user_id"]
-
-    # per-guild runtime trackers
-    gid = message.guild.id
-    locks = bot.locked_players.setdefault(gid, {})               # {user_id: unlock_dt}
-    lp = bot.last_poster.setdefault(gid, {"user_id": None, "count": 0})
-
-    # --- timeout check ---
-    now = datetime.utcnow()
-    if message.author.id in locks:
-        if now < locks[message.author.id]:
-            with contextlib.suppress(Exception):
-                await message.delete()
-            return
-        else:
-            del locks[message.author.id]
-
-    # last poster tracker
-    if lp["user_id"] == message.author.id:
-        lp["count"] += 1
-    else:
-        lp["user_id"] = message.author.id
-        lp["count"] = 1
-
-    # --- rule: no double posts ---
-    if last_user == message.author.id:
-        mark_wrong(message.guild.id, message.author.id)
-        await safe_react(message, "⛔")
-        banter = (pick_banter("wrong") or "Not two in a row. Behave. 😅").replace("{n}", str(expected))
-        with contextlib.suppress(Exception):
-            await message.reply(
-                f"Not two in a row, {message.author.mention}. {banter} Next is **{expected}** for someone else."
+        # milestones
+        if expected in MILESTONES:
+            em = discord.Embed(
+                title="🎉 Party Mode 🎉",
+                description=f"**{expected}** smashed by {message.author.mention}!",
+                colour=discord.Colour.gold()
             )
-        return
-
-    # --- rule: must be exact next number ---
-    if posted != expected:
-        mark_wrong(message.guild.id, message.author.id)
-
-        key = (message.guild.id, message.channel.id, message.author.id)
-        _wrong_streak[key] += 1
-
-        # PATCH: per-guild wrong entry counter (reset after 5 wrong entries)
-        wrong_entries[message.guild.id] += 1
-        if wrong_entries[message.guild.id] >= 5:
-            wrong_entries[message.guild.id] = 0
-            reset_count(message.guild.id)
+            em.set_footer(text=f"Guild streak: {get_state(message.guild.id)['guild_streak']} • Keep it rolling!")
             with contextlib.suppress(Exception):
-                await message.channel.send("⚠️ Five wrong entries — counting has been reset to **1**. Keep it tidy, team.")
-            lp["user_id"] = None
-            lp["count"] = 0
-            return
+                await message.channel.send(embed=em)
+                mb = pick_banter("milestone")
+                if mb:
+                    await message.channel.send(mb)
 
-      
-        # fetch bench duration from settings (default 10)
-        st_bench = get_state(message.guild.id)
-        ban_minutes = int(st_bench["ban_minutes"] if "ban_minutes" in st_bench.keys() and st_bench["ban_minutes"] is not None else 1)
+        # facts + badges
+        add_badge = (is_prime(expected) or is_palindrome(expected) or (expected % 100 == 0) or funny_number(expected))
+        if add_badge or st["facts_on"]:
+            fact = maths_fact(expected)
+            if fact:
+                with contextlib.suppress(Exception):
+                    await message.channel.send(f"✨ {fact}")
+        if add_badge:
+            with db() as conn:
+                _touch_user(conn, message.guild.id, message.author.id, correct=0, wrong=0,
+                            streak_best=get_state(message.guild.id)["guild_streak"], add_badge=True)
 
-        if _wrong_streak[key] >= 3:
-            _wrong_streak[key] = 0
-            locks[message.author.id] = now + timedelta(minutes=ban_minutes)
-            roast = pick_banter("roast") or "Have a sit-down and count sheep, not numbers. 🛋️"
+        # hidden giveaway target maintenance
+        ensure_giveaway_target(message.guild.id)
+
+        # >>> If target just got hit, perform the draw and announce (random or fixed)
+        st_now = get_state(message.guild.id)
+        target_now = st_now["giveaway_target"]
+        if target_now is not None and expected == int(target_now):
+            did_announce = await try_giveaway_draw(bot, message, expected)
+
+            # Tournament hook (added)
+            is_active, ends_at, fixed_reward, max_jp, jp_hit, silent = get_tourney(message.guild.id)
+            if is_active and parse_iso(ends_at) and now_utc() < parse_iso(ends_at):
+                if jp_hit < max_jp:
+                    add_tourney_win(message.guild.id, message.author.id, 1)
+                    set_tourney(message.guild.id, jackpots_hit=jp_hit + 1)
+                    await message.channel.send(
+                        f"🏁 Tournament win for {message.author.mention}! (+1) • {fixed_reward} creds"
+                    )
+                elif not silent:
+                    await message.channel.send(
+                        f"{message.author.mention} hit another jackpot, "
+                        f"but the tournament cap of {max_jp} is already reached!"
+                    )
+
+            # jackpot win – no bench here
             with contextlib.suppress(Exception):
-                await safe_react(message, "⛔")
-                await message.reply(
-                    f"🚫 {message.author.mention} three wrong on the trot — benched for **{ban_minutes} minutes**. {roast}"
-                )
-            # also clear last-poster to avoid accidental follow-ups counting
-            lp["user_id"] = None
-            lp["count"] = 0
-            return
+                await safe_react(message, "🎉")
+            await message.channel.send(
+                f"🎉 {message.author.mention} bagged the jackpot! New jackpot is armed… keep counting."
+            )
 
-        await safe_react(message, "❌")
-        banter = pick_banter("wrong") or "Oof—maths says ‘nah’. 📏"
-        with contextlib.suppress(Exception):
-            await message.reply(f"{banter} Next up is **{expected}**.")
-        return
+            if did_announce:
+                return
 
+    except Exception as e:
+        print(f"[on_message] {type(e).__name__}: {e}")
 
-    # --- success! ---
-    bump_ok(message.guild.id, message.author.id)
-    await safe_react(message, "✅")
-    # reset wrong-guess streak on correct hit
-    _wrong_streak[(message.guild.id, message.channel.id, message.author.id)] = 0
-    # PATCH: reset guild-wide wrong counter on correct hit
-    wrong_entries[message.guild.id] = 0
-
-    # log for giveaway eligibility
-    with contextlib.suppress(Exception):
-        log_correct_count(message.guild.id, expected, message.author.id)
-
-    # milestones
-    if expected in MILESTONES:
-        em = discord.Embed(
-            title="🎉 Party Mode 🎉",
-            description=f"**{expected}** smashed by {message.author.mention}!",
-            colour=discord.Colour.gold()
-        )
-        em.set_footer(text=f"Guild streak: {get_state(message.guild.id)['guild_streak']} • Keep it rolling!")
-        with contextlib.suppress(Exception):
-            await message.channel.send(embed=em)
-            mb = pick_banter("milestone")
-            if mb:
-                await message.channel.send(mb)
-
-    # facts + badges
-    add_badge = (is_prime(expected) or is_palindrome(expected) or (expected % 100 == 0) or funny_number(expected))
-    if add_badge or st["facts_on"]:
-        fact = maths_fact(expected)
-        if fact:
-            with contextlib.suppress(Exception):
-                await message.channel.send(f"✨ {fact}")
-    if add_badge:
-        with db() as conn:
-            _touch_user(conn, message.guild.id, message.author.id, correct=0, wrong=0,
-                        streak_best=get_state(message.guild.id)["guild_streak"], add_badge=True)
-
-    # hidden giveaway target maintenance
-    ensure_giveaway_target(message.guild.id)
-
-    # >>> If target just got hit, perform the draw and announce (random or fixed)
-    st_now = get_state(message.guild.id)
-    target_now = st_now["giveaway_target"]
-    if target_now is not None and expected == int(target_now):
-        did_announce = await try_giveaway_draw(bot, message, expected)
-    
-        # Tournament hook (added)
-        is_active, ends_at, fixed_reward, max_jp, jp_hit, silent = get_tourney(message.guild.id)
-        if is_active and parse_iso(ends_at) and now_utc() < parse_iso(ends_at):
-            if jp_hit < max_jp:
-                add_tourney_win(message.guild.id, message.author.id, 1)
-                set_tourney(message.guild.id, jackpots_hit=jp_hit + 1)
-                await message.channel.send(
-                    f"🏁 Tournament win for {message.author.mention}! (+1) • {fixed_reward} creds"
-                )
-            elif not silent:
-                await message.channel.send(
-                    f"{message.author.mention} hit another jackpot, "
-                    f"but the tournament cap of {max_jp} is already reached!"
-                )
-    
-        # jackpot win – no bench here
-        with contextlib.suppress(Exception):
-            await safe_react(message, "🎉")
-        await message.channel.send(
-            f"🎉 {message.author.mention} bagged the jackpot! New jackpot is armed… keep counting."
-        )
-
-    
-        if did_announce:
-            return
-    
 # ========= Slash Commands =========
 class FunCounting(commands.Cog):
     def __init__(self, b: commands.Bot):
@@ -1248,7 +1259,6 @@ class FunCounting(commands.Cog):
                 nxt = st["current_number"] + 1
                 await interaction.response.send_message(f"▶️ Counting **resumed** (numbers). Next is **{nxt}**.", ephemeral=False)
 
-
     @app_commands.command(name="count_mode", description="Set counting mode for this server: numbers or letters.")
     @app_commands.choices(mode=[
         app_commands.Choice(name="Numbers (1,2,3…)", value="numbers"),
@@ -1295,7 +1305,6 @@ class FunCounting(commands.Cog):
         # Happy path
         await interaction.followup.send(msg, ephemeral=True)
 
-    
     @app_commands.command(name="numbers_only", description="Toggle numbers-only mode.")
     @app_commands.guild_only()
     async def numbers_only_cmd(self, interaction: discord.Interaction, on: bool):
@@ -1544,8 +1553,6 @@ class FunCounting(commands.Cog):
                 f"❌ Reload failed: {type(e).__name__}: {e}",
                 ephemeral=True
             )
-            
-
 
     @app_commands.command(name="ticket_diag", description="Show Prizo's effective permissions in the ticket category.")
     @app_commands.guild_only()
@@ -1637,7 +1644,6 @@ class FunCounting(commands.Cog):
             f"_Jackpots after cap will be {'silent' if silent else 'announced'}._"
         )
 
-
     @app_commands.command(name="tournament_end", description="End the current Prizo tournament now")
     async def tournament_end(self, interaction: discord.Interaction):
         if not interaction.user.guild_permissions.manage_guild:
@@ -1677,8 +1683,6 @@ class FunCounting(commands.Cog):
             ephemeral=True
         )
 
-
-        #ai
     # PATCH: simple AI banter toggles
     @app_commands.command(name="aibanter_on", description="Enable AI banter in counting channel.")
     @app_commands.guild_only()
@@ -1698,6 +1702,7 @@ class FunCounting(commands.Cog):
     async def aibanter_idle(self, interaction: discord.Interaction, minutes: app_commands.Range[int,1,60]):
         ai_idle_minutes[interaction.guild_id] = int(minutes)
         await interaction.response.send_message(f"⏱️ AI banter idle set to **{int(minutes)} min**.", ephemeral=True) 
+
 async def setup_cog():
     await bot.add_cog(FunCounting(bot))
 
