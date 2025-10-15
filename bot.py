@@ -1094,7 +1094,7 @@ async def on_message(message: discord.Message):
       
         # fetch bench duration from settings (default 10)
         st_bench = get_state(message.guild.id)
-        ban_minutes = int(st_bench["ban_minutes"] if "ban_minutes" in st_bench.keys() and st_bench["ban_minutes"] is not None else 10)
+        ban_minutes = int(st_bench["ban_minutes"] if "ban_minutes" in st_bench.keys() and st_bench["ban_minutes"] is not None else 1)
 
         if _wrong_streak[key] >= 3:
             _wrong_streak[key] = 0
@@ -1569,7 +1569,7 @@ class FunCounting(commands.Cog):
     @app_commands.command(name="tournament_start", description="Start a Prizo tournament")
     @app_commands.describe(
         duration="How long it runs (minutes, default 30)",
-        reward="Fixed reward amount per hit (default 1000)",
+        reward="Fixed reward amount per hit (accepts '1000', '2k', 'xWL', '3xWL')",
         cap="Max jackpots counted (default 5)",
         silent="Silent after cap (true/false, default true)"
     )
@@ -1586,14 +1586,15 @@ class FunCounting(commands.Cog):
                 "You need **Manage Server** permission.", ephemeral=True
             )
 
-                # --- Parse reward token (accepts credits or xWL) ---
+        # --- Parse reward token (accepts credits or xWL) ---
         try:
             reward_kind, reward_amount = parse_reward_token(reward)
         except ValueError as e:
             return await interaction.response.send_message(f"❌ {e}", ephemeral=True)
 
+        # We'll store the numeric amount in tournaments.fixed_reward.
+        # If kind == 'xwl', fixed_reward is the XWL count; if 'credits', it's the credit amount.
         reward_label = f"{reward_amount}xWL" if reward_kind == "xwl" else f"{reward_amount:,} credits"
-        reward_credits = reward_amount if reward_kind == "credits" else 0
 
         g = interaction.guild
         ends_at = now_utc() + timedelta(minutes=int(duration))
@@ -1601,7 +1602,7 @@ class FunCounting(commands.Cog):
             g.id,
             is_active=1,
             ends_at_utc=iso(ends_at),
-            fixed_reward=int(reward),
+            fixed_reward=int(reward_amount),
             max_jackpots=int(cap),
             jackpots_hit=0,
             silent_after_limit=1 if silent else 0,
@@ -1612,6 +1613,7 @@ class FunCounting(commands.Cog):
             f"Duration: **{duration}m** • Reward: **{reward_label}** • Cap: **{cap} jackpots**\n"
             f"_Jackpots after cap will be {'silent' if silent else 'announced'}._"
         )
+
 
     @app_commands.command(name="tournament_end", description="End the current Prizo tournament now")
     async def tournament_end(self, interaction: discord.Interaction):
@@ -1633,9 +1635,15 @@ class FunCounting(commands.Cog):
             return await interaction.response.send_message("No tournament is active.", ephemeral=True)
         end_dt = parse_iso(ends_at)
         mins = max(0, int(((end_dt - now_utc()).total_seconds() // 60) if end_dt else 0))
+
+        # We can’t know if fixed_reward is credits or xWL from DB schema,
+        # so present it neutrally and keep it clear:
+        reward_line = f"{fixed_reward:,} (credits or xWL amount)"
+
         await interaction.response.send_message(
             f"🏁 Tournament active — ends in **~{mins}m**\n"
-            f"Reward: **{fixed_reward}** • Cap: **{jp_hit}/{max_jp}** • After cap: **{'silent' if silent else 'announce'}**."
+            f"Reward (per jackpot): **{reward_line}** • Cap: **{jp_hit}/{max_jp}** • After cap: **{'silent' if silent else 'announce'}**.",
+            ephemeral=False
         )
 
     @app_commands.command(name="banter_version", description="Show the loaded banter.json version and path.")
