@@ -223,7 +223,7 @@ def _touch_user(conn, gid: int, uid: int, correct=0, wrong=0, streak_best=None, 
             badges         = ?,
             last_updated   = ?
         WHERE guild_id=? AND user_id=?
-        """, (correct, wrong, new_streak, new_badges, now, gid, uid))
+        """, (correct, wrong, new_streak, new_badges, now, gid, uid)
 
 def bump_ok(gid: int, uid: int):
     with db() as conn:
@@ -236,12 +236,12 @@ def bump_ok(gid: int, uid: int):
         SET current_number=?, last_user_id=?, guild_streak=?, best_guild_streak=?
         WHERE guild_id=?;
         """, (next_num, uid, new_streak, best, gid))
-        _touch_user(conn, gid, uid, correct=1, streak_best=new_streak))
+        _touch_user(conn, gid, uid, correct=1, streak_best=new_streak)
 
 def mark_wrong(gid: int, uid: int):
     with db() as conn:
         _touch_user(conn, gid, uid, wrong=1)
-        conn.execute("UPDATE guild_state SET guild_streak=0 WHERE guild_id=?", (gid,))
+        conn.execute("UPDATE guild_state SET guild_streak=0 WHERE guild_id=?", (gid,)
 
 def log_correct_count(gid: int, n: int, uid: int):
     with db() as conn:
