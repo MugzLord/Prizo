@@ -1,4 +1,4 @@
-# bot.py — Prizo (fresh build)
+# bot.py — Prizo (fresh build, Python 3.8/3.9 compatible)
 # Features: numbers/letters counting, random & fixed jackpots + ticketing,
 # tournaments (cap + silent-after-cap), AI idle banter, maths facts/badges,
 # user/guild stats, hardened SQLite (WAL + busy_timeout), hot-reload banter.
@@ -13,6 +13,7 @@ import contextlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from collections import defaultdict
+from typing import Optional, Tuple
 
 import discord
 from discord import app_commands
@@ -90,7 +91,7 @@ def init_db():
             ticket_staff_role_id INTEGER,
             count_mode TEXT NOT NULL DEFAULT 'numbers',
             current_letter TEXT NOT NULL DEFAULT 'A',
-            ban_minutes INTEGER NOT NULL DEFAULT 1,
+            ban_minutes INTEGER NOT NULL DEFAULT 10,
             count_paused INTEGER NOT NULL DEFAULT 0
         );
         """)
@@ -151,10 +152,14 @@ def init_db():
 def now_utc(): return datetime.now(timezone.utc)
 def now_iso(): return datetime.utcnow().isoformat()
 def iso(dt: datetime) -> str: return dt.astimezone(timezone.utc).isoformat()
-def parse_iso(s: str | None):
-    if not s: return None
-    try: return datetime.fromisoformat(s)
-    except Exception: return None
+
+def parse_iso(s: Optional[str]):
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s)
+    except Exception:
+        return None
 
 def get_state(gid: int):
     with db() as conn:
@@ -223,7 +228,7 @@ def _touch_user(conn, gid: int, uid: int, correct=0, wrong=0, streak_best=None, 
             badges         = ?,
             last_updated   = ?
         WHERE guild_id=? AND user_id=?
-        """, (correct, wrong, new_streak, new_badges, now, gid, uid)
+        """, (correct, wrong, new_streak, new_badges, now, gid, uid))
 
 def bump_ok(gid: int, uid: int):
     with db() as conn:
@@ -236,12 +241,12 @@ def bump_ok(gid: int, uid: int):
         SET current_number=?, last_user_id=?, guild_streak=?, best_guild_streak=?
         WHERE guild_id=?;
         """, (next_num, uid, new_streak, best, gid))
-        _touch_user(conn, gid, uid, correct=1, streak_best=new_streak)
+        _touch_user(conn, gid, uid, correct=1, streak_best=new_streak)  # fixed extra ')'
 
 def mark_wrong(gid: int, uid: int):
     with db() as conn:
         _touch_user(conn, gid, uid, wrong=1)
-        conn.execute("UPDATE guild_state SET guild_streak=0 WHERE guild_id=?", (gid,)
+        conn.execute("UPDATE guild_state SET guild_streak=0 WHERE guild_id=?", (gid,))
 
 def log_correct_count(gid: int, n: int, uid: int):
     with db() as conn:
@@ -318,7 +323,7 @@ def pick_banter(cat: str) -> str:
     lines = BANTER.get(cat, [])
     return random.choice(lines) if lines else ""
 
-def pick_fact(category: str, n: int) -> str | None:
+def pick_fact(category: str, n: int) -> Optional[str]:
     lines = FUNFACTS.get(category, [])
     if isinstance(lines, list) and lines:
         return random.choice(lines).replace("{n}", str(n))
@@ -340,7 +345,7 @@ def is_palindrome(n: int) -> bool:
 def funny_number(n: int) -> bool:
     return n in {42, 69, 73, 96, 101, 111, 222, 333, 369, 404, 420, 666, 777, 999}
 
-def maths_fact(n: int) -> str | None:
+def maths_fact(n: int) -> Optional[str]:
     special = FUNFACTS.get("funny", {})
     if str(n) in special:
         return random.choice(special[str(n)]).replace("{n}", str(n))
@@ -368,11 +373,11 @@ def _next_idle_line(gid: int) -> str:
 LETTER_STRICT = re.compile(r"^\s*([A-Za-z])\s*$")
 LETTER_LOOSE  = re.compile(r"^\s*([A-Za-z])")
 
-def extract_letter(text: str, strict: bool) -> str | None:
+def extract_letter(text: str, strict: bool) -> Optional[str]:
     m = (LETTER_STRICT if strict else LETTER_LOOSE).match(text or "")
     return m.group(1).upper() if m else None
 
-def next_letter_dir(gid: int, letter: str | None) -> str:
+def next_letter_dir(gid: int, letter: Optional[str]) -> str:
     try:
         is_active, ends_at, *_ = get_tourney(gid)
         rev = bool(is_active and parse_iso(ends_at) and now_utc() < parse_iso(ends_at))
@@ -405,8 +410,10 @@ def bump_ok_letter(gid: int, uid: int, expected_letter: str):
 
 def reset_letters(gid: int, start: str = "A"):
     with db() as conn:
-        conn.execute("UPDATE guild_state SET current_letter=?, last_user_id=NULL, guild_streak=0 WHERE guild_id=?",
-                     (start.upper(), gid))
+        conn.execute(
+            "UPDATE guild_state SET current_letter=?, last_user_id=NULL, guild_streak=0 WHERE guild_id=?",
+            (start.upper(), gid)
+        )
 
 # ==================== TOURNAMENTS ====================
 def get_tourney(gid: int):
@@ -498,12 +505,12 @@ def ensure_giveaway_target(gid: int):
             ).fetchone()["giveaway_target"]
         return row["giveaway_target"]
 
-def get_ticket_url(gid: int) -> str | None:
+def get_ticket_url(gid: int) -> Optional[str]:
     with db() as conn:
         row = conn.execute("SELECT ticket_url FROM guild_state WHERE guild_id=?", (gid,)).fetchone()
         return row["ticket_url"] if row else None
 
-def get_ticket_cfg(gid: int) -> tuple[int | None, int | None]:
+def get_ticket_cfg(gid: int) -> Tuple[Optional[int], Optional[int]]:
     with db() as conn:
         row = conn.execute("SELECT ticket_category_id, ticket_staff_role_id FROM guild_state WHERE guild_id=?", (gid,)).fetchone()
         if not row: return None, None
@@ -808,7 +815,7 @@ async def on_message(message: discord.Message):
                 try:
                     ban_minutes = int(st["ban_minutes"])
                 except Exception:
-                    ban_minutes = 1
+                    ban_minutes = 10
 
                 if _wrong_streak[key] >= 3:
                     _wrong_streak[key] = 0
@@ -915,7 +922,7 @@ async def on_message(message: discord.Message):
             try:
                 ban_minutes = int(st["ban_minutes"])
             except Exception:
-                ban_minutes = 1
+                ban_minutes = 10
             if _wrong_streak[key] >= 3:
                 _wrong_streak[key] = 0
                 locks[message.author.id] = now + timedelta(minutes=ban_minutes)
@@ -1100,7 +1107,7 @@ class FunCounting(commands.Cog):
 
     @app_commands.command(name="stats", description="See counting stats for a user.")
     @app_commands.guild_only()
-    async def stats(self, interaction: discord.Interaction, user: discord.Member | None = None):
+    async def stats(self, interaction: discord.Interaction, user: Optional[discord.Member] = None):
         user = user or interaction.user
         s = get_user_stats(interaction.guild_id, user.id)
         em = discord.Embed(title=f"📊 Stats for {user.display_name}", colour=discord.Colour.green())
@@ -1123,11 +1130,11 @@ class FunCounting(commands.Cog):
     @app_commands.command(name="giveaway_config", description="Set random giveaway range and prize label.")
     @app_commands.describe(range_min="Min steps until a hidden giveaway (e.g. 1)",
                            range_max="Max steps (e.g. 6)",
-                           prize="Prize label, e.g. '💎 2 WL'")
+                           prize="Prize label, e.g. '💎 1000 VU Credits'")
     @app_commands.guild_only()
     async def giveaway_config(self, interaction: discord.Interaction,
                               range_min: int = 10, range_max: int = 120,
-                              prize: str = "💎 1000 2 WL"):
+                              prize: str = "💎 1000 VU Credits"):
         if not interaction.user.guild_permissions.manage_guild:
             return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
         if range_min < 1: range_min = 1
@@ -1308,7 +1315,7 @@ class FunCounting(commands.Cog):
 
     # Benching
     @app_commands.command(name="set_ban_minutes", description="Set bench duration (minutes) after 3 wrong guesses in a row.")
-    @app_commands.describe(minutes="Bench duration in minutes (default 1)")
+    @app_commands.describe(minutes="Bench duration in minutes (default 10)")
     @app_commands.guild_only()
     async def set_ban_minutes(self, interaction: discord.Interaction, minutes: app_commands.Range[int, 1, 1440]):
         if not interaction.user.guild_permissions.manage_guild:
