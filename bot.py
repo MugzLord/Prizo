@@ -1037,6 +1037,20 @@ class FunCounting(commands.Cog):
                 nxt = st["current_number"] + 1
                 await interaction.response.send_message(f"▶️ Counting **resumed** (numbers). Next is **{nxt}**.", ephemeral=False)
 
+
+    @app_commands.command(name="sync", description="Force re-sync slash commands (admin only).")
+    @app_commands.guild_only()
+    async def sync_cmd(self, interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("Nope.", ephemeral=True)
+        try:
+            synced = await self.bot.tree.sync(guild=interaction.guild)
+            await interaction.response.send_message(
+                f"Resynced **{len(synced)}** commands to this server.", ephemeral=True
+            )
+        except Exception as e:
+            await interaction.response.send_message(f"Sync failed: {type(e).__name__}: {e}", ephemeral=True)
+
     @app_commands.command(name="count_mode", description="Set counting mode: numbers or letters.")
     @app_commands.choices(mode=[
         app_commands.Choice(name="Numbers (1,2,3…)", value="numbers"),
