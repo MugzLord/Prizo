@@ -246,16 +246,15 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
 # -------------------------------------------------
 @bot.event
 async def on_ready():
-    # clear old global commands
-    bot.tree.clear_commands(guild=None)
-
-    # sync the ones in this file
-    try:
-        await bot.tree.sync()
-    except Exception as e:
-        print(f"[tree.sync] {e}")
-
     print(f"Logged in as {bot.user} ({bot.user.id})")
+
+    # sync to every guild the bot is in
+    for guild in bot.guilds:
+        try:
+            await bot.tree.sync(guild=guild)
+            print(f"[slash] synced to {guild.name} ({guild.id})")
+        except Exception as e:
+            print(f"[slash] failed to sync to {guild.name}: {e}")
 
 
 
@@ -277,43 +276,65 @@ async def set_ticket_staff(interaction: discord.Interaction, role: discord.Role)
     await interaction.response.send_message(f"🛡️ Ticket staff set to **{role.name}**.", ephemeral=True)
 
 
-@bot.tree.command(name="set_lucky_prize", description="Set the prize text for lucky-number winners.")
-@app_commands.guild_only()
+@bot.tree.command(
+    name="set_lucky_prize",
+    description="Set the prize text for lucky-number winners."
+)
+@discord.app_commands.guild_only()
 async def set_lucky_prize(interaction: discord.Interaction, prize: str):
     if not interaction.user.guild_permissions.manage_guild:
-        return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
+        return await interaction.response.send_message(
+            "You need **Manage Server** permission.", ephemeral=True
+        )
     st = get_state(interaction.guild_id)
-    st["lucky_prize"] = prize
-    await interaction.response.send_message(f"🏅 Lucky prize set to: **{prize}**", ephemeral=True)
+    st["lucky_prize"] = prize  # <- "2WL" goes here
+    await interaction.response.send_message(
+        f"🏅 Lucky prize set to: **{prize}**", ephemeral=True
+    )
 
 
-@bot.tree.command(name="set_lucky_range", description="Set min/max for random lucky number + optional prize.")
-@app_commands.describe(min_value="Minimum number", max_value="Maximum number", prize="Optional prize text")
-@app_commands.guild_only()
+@bot.tree.command(
+    name="set_lucky_range",
+    description="Set min/max for random lucky number and optional prize."
+)
+@discord.app_commands.describe(
+    min_value="Smallest number the bot can arm as lucky",
+    max_value="Biggest number the bot can arm as lucky",
+    prize="Optional prize text, e.g. 2WL"
+)
+@discord.app_commands.guild_only()
 async def set_lucky_range(
     interaction: discord.Interaction,
-    min_value: app_commands.Range[int, 1, 100000],
-    max_value: app_commands.Range[int, 1, 100000],
-    prize: Optional[str] = None
+    min_value: discord.app_commands.Range[int, 1, 100000],
+    max_value: discord.app_commands.Range[int, 1, 100000],
+    prize: str | None = None,
 ):
     if not interaction.user.guild_permissions.manage_guild:
-        return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
+        return await interaction.response.send_message(
+            "You need **Manage Server** permission.", ephemeral=True
+        )
     if min_value >= max_value:
-        return await interaction.response.send_message("Min must be less than max.", ephemeral=True)
+        return await interaction.response.send_message(
+            "Min must be **less** than max.", ephemeral=True
+        )
 
     st = get_state(interaction.guild_id)
     st["lucky_min"] = int(min_value)
     st["lucky_max"] = int(max_value)
-    if prize:
-        st["lucky_prize"] = prize
+    if prize is not None:
+        st["lucky_prize"] = prize  # <- "2WL" goes here
+
+    import random
     st["lucky_target"] = random.randint(st["lucky_min"], st["lucky_max"])
 
     await interaction.response.send_message(
-        f"🎯 Lucky range set to **{min_value}–{max_value}**. Armed number: **{st['lucky_target']}**.\n"
-        f"Prize: **{st['lucky_prize']}**",
-        ephemeral=True
+        (
+            f"🎯 Lucky range set to **{min_value}–{max_value}**.\n"
+            f"Armed lucky number: **{st['lucky_target']}**.\n"
+            f"Prize: **{st['lucky_prize']}**"
+        ),
+        ephemeral=True,
     )
-
 
 @bot.tree.command(name="set_milestone_range", description="Set min/max for random milestone (announce only).")
 @app_commands.describe(min_value="Minimum milestone", max_value="Maximum milestone")
