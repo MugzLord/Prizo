@@ -453,20 +453,21 @@ async def on_message(message: discord.Message):
         else:
             del locks[message.author.id]
 
-    # extract number
+    # ----- extract posted number -----
     if st["words_only"]:
         raw = message.content.strip().lower()
         posted = WORD_NUMBERS.get(raw)
     else:
         posted = extract_int(message.content, strict=False)
 
+    # ignore non-number chat
     if posted is None:
         return
 
     expected = st["current_number"] + 1
     last_user = st["last_user_id"]
 
-    # no two in a row
+    # ----- no two in a row -----
     if last_user == message.author.id:
         banter_line = pick_banter("wrong", "Not two in a row.")
         with contextlib.suppress(Exception):
@@ -476,34 +477,33 @@ async def on_message(message: discord.Message):
         )
         return
 
-# wrong number
-if posted != expected:
-    key = (message.channel.id, message.author.id)
-    st["wrong_streak"][key] = st["wrong_streak"].get(key, 0) + 1
+    # ----- WRONG NUMBER -----
+    if posted != expected:
+        key = (message.channel.id, message.author.id)
+        st["wrong_streak"][key] = st["wrong_streak"].get(key, 0) + 1
 
-    # 👇 this is the important part
-    st["current_number"] = 0          # so next expected = 1
-    st["last_user_id"] = None         # so anyone can start again
+        # reset back to 1
+        st["current_number"] = 0
+        st["last_user_id"] = None
 
-    wrong_line = pick_banter("wrong", "Wrong number.")
-    await message.channel.send(
-        f"❌ {wrong_line} {message.author.mention} Count is back to **1**."
-    )
-
-    # optional 3-wrong bench
-    if st["wrong_streak"][key] >= 3:
-        st["wrong_streak"][key] = 0
-        ban_minutes = st["ban_minutes"]
-        until = datetime.utcnow() + timedelta(minutes=ban_minutes)
-        st["locks"][message.author.id] = until
-        roast = pick_banter("roast", "Have a sit-down and count sheep, not numbers.")
+        wrong_line = pick_banter("wrong", "Wrong number.")
         await message.channel.send(
-            f"🚫 {message.author.mention} benched for **{ban_minutes} minutes**. {roast}"
+            f"❌ {wrong_line} {message.author.mention} Count is back to **1**."
         )
-    return
-v
 
-    # success
+        # optional 3-wrong bench
+        if st["wrong_streak"][key] >= 3:
+            st["wrong_streak"][key] = 0
+            ban_minutes = st["ban_minutes"]
+            until = datetime.utcnow() + timedelta(minutes=ban_minutes)
+            st["locks"][message.author.id] = until
+            roast = pick_banter("roast", "Have a sit-down and count sheep, not numbers.")
+            await message.channel.send(
+                f"🚫 {message.author.mention} benched for **{ban_minutes} minutes**. {roast}"
+            )
+        return  # <- important, stop here for wrong
+
+    # ----- SUCCESS -----
     st["current_number"] = expected
     st["last_user_id"] = message.author.id
     st["wrong_streak"][(message.channel.id, message.author.id)] = 0
@@ -511,7 +511,7 @@ v
     with contextlib.suppress(Exception):
         await message.add_reaction("✅")
 
-    # milestone check (dynamic)
+    # milestone (dynamic)
     if expected == st.get("next_milestone"):
         mile_line = pick_banter("milestone", f"Milestone {expected} smashed!")
         em = discord.Embed(
@@ -520,14 +520,12 @@ v
             colour=discord.Colour.gold()
         )
         await message.channel.send(embed=em)
-
-        # re-arm next random milestone
+        # re-arm next milestone
         st["next_milestone"] = random.randint(st["milestone_min"], st["milestone_max"])
 
-    # lucky number -> mini-game
+    # lucky number → mini game
     if expected == st.get("lucky_target"):
         with contextlib.suppress(Exception):
             await run_quick_math(message.channel, message.author, expected)
-
 
 bot.run(TOKEN)
