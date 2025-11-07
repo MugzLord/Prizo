@@ -246,18 +246,9 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
 # -------------------------------------------------
 @bot.event
 async def on_ready():
-    # 1) clear ALL global commands in code
     bot.tree.clear_commands(guild=None)
-
-    # 2) re-register only the commands in THIS file
-    # (they’re defined below: set_ticket_category, set_lucky_range, etc.)
-    try:
-        await bot.tree.sync()
-    except Exception as e:
-        print(f"[tree.sync] {e}")
-
+    await bot.tree.sync()
     print(f"Logged in as {bot.user} ({bot.user.id})")
-
 
 
 @bot.tree.command(name="set_ticket_category", description="Set the category where winner tickets will be created.")
