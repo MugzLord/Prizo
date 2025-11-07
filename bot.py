@@ -246,17 +246,23 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
 # -------------------------------------------------
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user} ({bot.user.id})")
+    print(f"[boot] logged in as {bot.user} ({bot.user.id})")
 
-    # sync to every guild the bot is in
-    for guild in bot.guilds:
-        try:
-            await bot.tree.sync(guild=guild)
-            print(f"[slash] synced to {guild.name} ({guild.id})")
-        except Exception as e:
-            print(f"[slash] failed to sync to {guild.name}: {e}")
+    # try per-guild sync first
+    if bot.guilds:
+        for g in bot.guilds:
+            try:
+                await bot.tree.sync(guild=g)
+                print(f"[slash] synced to guild: {g.name} ({g.id})")
+            except Exception as e:
+                print(f"[slash] FAILED to sync to guild: {g.name} ({g.id}) -> {e}")
 
-
+    # also try global sync (sometimes per-guild is blocked)
+    try:
+        await bot.tree.sync()
+        print("[slash] global sync ok")
+    except Exception as e:
+        print(f"[slash] global sync failed -> {e}")
 
 @bot.tree.command(name="set_ticket_category", description="Set the category where winner tickets will be created.")
 @app_commands.guild_only()
