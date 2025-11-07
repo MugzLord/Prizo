@@ -183,24 +183,51 @@ async def create_winner_ticket(
 
 
 # -------------------------------------------------
-# mini-game: quick math
+# mini-game: quick math (random ops)
 # -------------------------------------------------
 async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Member, number_hit: int):
     """First correct answer wins ticket + ticket channel."""
-    a = random.randint(2, 9)
-    b = random.randint(2, 9)
-    answer = a + b
+    import random
+
+    # pick an operation
+    ops = ["+", "-", "*", "/"]
+    op = random.choice(ops)
+
+    # generate numbers sensibly per op
+    if op == "+":
+        a = random.randint(2, 15)
+        b = random.randint(2, 15)
+        answer = a + b
+        display = f"{a} + {b}"
+    elif op == "-":
+        # make sure it's not negative
+        a = random.randint(5, 20)
+        b = random.randint(1, a)
+        answer = a - b
+        display = f"{a} - {b}"
+    elif op == "*":
+        a = random.randint(2, 10)
+        b = random.randint(2, 10)
+        answer = a * b
+        display = f"{a} × {b}"
+    else:  # "/"
+        # make a clean division: pick answer first
+        answer = random.randint(2, 12)
+        b = random.randint(2, 12)
+        a = answer * b
+        display = f"{a} ÷ {b}"
 
     em = discord.Embed(
         title="🧠 Lucky Number Mini Game!",
         description=(
             f"{trigger_user.mention} hit **{number_hit}** 🎯\n"
-            f"First to answer **{a} + {b}** wins a ticket!"
+            f"First to answer **{display}** wins a ticket!"
         ),
         colour=discord.Colour.gold(),
     )
     await channel.send(embed=em)
 
+    # who answers first?
     def check(m: discord.Message):
         if m.author.bot:
             return False
@@ -218,27 +245,54 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
         await channel.send("⏱️ No one solved it. Mini game over.")
         return
 
+    # winner logic
     guild = channel.guild
     st = get_state(guild.id)
     st["tickets"].append(winner_msg.author.id)
     prize_text = st.get("lucky_prize", "Lucky number mini-game prize")
 
+    # try to create the ticket channel
     ticket_chan = None
     with contextlib.suppress(Exception):
-        ticket_chan = await create_winner_ticket(guild, winner_msg.author, prize_text, number_hit)
+        ticket_chan = await create_winner_ticket(
+            guild,
+            winner_msg.author,
+            prize=prize_text,
+            n_hit=number_hit,
+        )
 
     winner_banter = pick_banter("winner", "We have a winner!")
     claim_banter = pick_banter("claim", "Open your ticket to claim.")
 
-    extra = f" Ticket: {ticket_chan.mention}" if ticket_chan else " (no ticket category set)"
-    await channel.send(
-        f"🏆 {winner_msg.author.mention} {winner_banter} **{a} + {b} = {answer}**\n"
-        f"🎟️ {claim_banter}{extra}"
-    )
+    if ticket_chan:
+        view = discord.ui.View()
+        view.add_item(
+            discord.ui.Button(
+                label="🎫 Open Ticket",
+                style=discord.ButtonStyle.link,
+                url=ticket_chan.jump_url,
+            )
+        )
 
-    # re-arm a new lucky number in same range
+        result_embed = discord.Embed(
+            title="🏆 Lucky Mini-Game Winner",
+            description=(
+                f"{winner_msg.author.mention} {winner_banter}\n"
+                f"**{display} = {answer}**\n"
+                f"{claim_banter}"
+            ),
+            colour=discord.Colour.purple(),
+        )
+        await channel.send(embed=result_embed, view=view)
+    else:
+        await channel.send(
+            f"🏆 {winner_msg.author.mention} {winner_banter} **{display} = {answer}**\n"
+            f"🎟️ {claim_banter} (no ticket category set)"
+        )
+
+    # re-arm new lucky
     st["lucky_target"] = random.randint(st["lucky_min"], st["lucky_max"])
-    await channel.send(f"🧨 New lucky number armed. Keep counting.")
+    await channel.send("📌 New lucky number armed. Keep counting.")
 
 
 # -------------------------------------------------
