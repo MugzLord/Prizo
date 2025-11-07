@@ -45,19 +45,19 @@ def pick_banter(key: str, default: str = "") -> str:
 
 
 # -------------------------------------------------
-# load count_config.json (only for word numbers)
+# load banter.json (only for word numbers)
 # -------------------------------------------------
 COUNT_CFG: Dict[str, Any] = {
     "word_numbers": {}
 }
-if os.path.exists("count_config.json"):
+if os.path.exists("banter.json"):
     try:
-        with open("count_config.json", "r", encoding="utf-8") as f:
+        with open("banter.json", "r", encoding="utf-8") as f:
             loaded = json.load(f)
             COUNT_CFG["word_numbers"] = loaded.get("word_numbers", {})
-        print("[count_config] loaded.")
+        print("[banter] loaded.")
     except Exception as e:
-        print(f"[count_config] failed to load: {e}")
+        print(f"[banter] failed to load: {e}")
 
 WORD_NUMBERS: Dict[str, int] = COUNT_CFG.get("word_numbers", {})
 
