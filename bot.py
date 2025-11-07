@@ -1,7 +1,4 @@
 # bot.py — Prizo (fresh build, Python 3.8/3.9 compatible)
-# Features: numbers/letters counting, random & fixed jackpots + ticketing,
-# tournaments (cap + silent-after-cap), AI idle banter, maths facts/badges,
-# user/guild stats, hardened SQLite (WAL + busy_timeout), hot-reload banter.
 
 import os
 import re
@@ -866,6 +863,7 @@ async def on_message(message: discord.Message):
         # ===== NUMBERS MODE =====
         INT_STRICT = re.compile(r"^\s*(-?\d+)\s*$")
         INT_LOOSE  = re.compile(r"^\s*(-?\d+)\b")
+
         def extract_int(text: str, strict: bool):
             m = (INT_STRICT if strict else INT_LOOSE).match(text)
             return int(m.group(1)) if m else None
@@ -910,19 +908,20 @@ async def on_message(message: discord.Message):
             mark_wrong(gid, message.author.id)
             key = (gid, message.channel.id, message.author.id)
             _wrong_streak[key] += 1
-        
+
             # instant reset on any wrong number
             reset_count(gid)
-            wrong_entries[gid] = 0  # clear the old counter
+            wrong_entries[gid] = 0
             lp["user_id"] = None
             lp["count"] = 0
-        
+
+            # ⬇️ shorter message, no “Next is 1.”
             with contextlib.suppress(Exception):
                 await message.channel.send(
-                    f"❌ Wrong number from {message.author.mention}. Count is back to **1**. Next is **1**."
+                    f"❌ Wrong number from {message.author.mention}. Count is back to **1**."
                 )
-        
-            # still keep the “3 wrongs = bench” logic
+
+            # keep the 3-wrongs bench
             try:
                 ban_minutes = int(st["ban_minutes"])
             except Exception:
@@ -937,13 +936,10 @@ async def on_message(message: discord.Message):
                         f"🚫 {message.author.mention} three wrong on the trot — benched for **{ban_minutes} minutes**. {roast}"
                     )
             else:
-                # optional little poke
                 await safe_react(message, "❌")
-        
             return
 
-
-        # success
+        # ✅ success
         bump_ok(gid, message.author.id)
         await safe_react(message, "✅")
         _wrong_streak[(gid, message.channel.id, message.author.id)] = 0
@@ -951,6 +947,7 @@ async def on_message(message: discord.Message):
 
         with contextlib.suppress(Exception):
             log_correct_count(gid, expected, message.author.id)
+
 
         # milestones
         MILESTONES = {10,20,25,30,40,50,69,75,80,90,100,111,123,150,200,250,300,333,369,400,420,500,600,666,700,750,800,900,999,1000}
