@@ -476,29 +476,32 @@ async def on_message(message: discord.Message):
         )
         return
 
-    # wrong number
-    if posted != expected:
-        key = (message.channel.id, message.author.id)
-        st["wrong_streak"][key] = st["wrong_streak"].get(key, 0) + 1
+# wrong number
+if posted != expected:
+    key = (message.channel.id, message.author.id)
+    st["wrong_streak"][key] = st["wrong_streak"].get(key, 0) + 1
 
-        st["current_number"] = 0
-        st["last_user_id"] = None
+    # 👇 this is the important part
+    st["current_number"] = 0          # so next expected = 1
+    st["last_user_id"] = None         # so anyone can start again
 
-        wrong_line = pick_banter("wrong", "Wrong number.")
+    wrong_line = pick_banter("wrong", "Wrong number.")
+    await message.channel.send(
+        f"❌ {wrong_line} {message.author.mention} Count is back to **1**."
+    )
+
+    # optional 3-wrong bench
+    if st["wrong_streak"][key] >= 3:
+        st["wrong_streak"][key] = 0
+        ban_minutes = st["ban_minutes"]
+        until = datetime.utcnow() + timedelta(minutes=ban_minutes)
+        st["locks"][message.author.id] = until
+        roast = pick_banter("roast", "Have a sit-down and count sheep, not numbers.")
         await message.channel.send(
-            f"❌ {wrong_line} {message.author.mention} Count is back to **1**."
+            f"🚫 {message.author.mention} benched for **{ban_minutes} minutes**. {roast}"
         )
-
-        if st["wrong_streak"][key] >= 3:
-            st["wrong_streak"][key] = 0
-            ban_minutes = st["ban_minutes"]
-            until = datetime.utcnow() + timedelta(minutes=ban_minutes)
-            st["locks"][message.author.id] = until
-            roast = pick_banter("roast", "Have a sit-down and count sheep, not numbers.")
-            await message.channel.send(
-                f"🚫 {message.author.mention} benched for **{ban_minutes} minutes**. {roast}"
-            )
-        return
+    return
+v
 
     # success
     st["current_number"] = expected
