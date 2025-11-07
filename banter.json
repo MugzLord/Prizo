@@ -1,5 +1,5 @@
 {
-  "word_numbers": [
+  "word_numbers": {
     "zero": 0,
     "one": 1,
     "two": 2,
@@ -501,7 +501,7 @@
     "four_hundred_ninety_eight": 498,
     "four_hundred_ninety_nine": 499,
     "five_hundred": 500
-  ],
+  },
  
   "winner": [
     "Jackpot aura unlocked. ✨",
