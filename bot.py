@@ -359,7 +359,9 @@ async def set_ticket_staff(interaction: discord.Interaction, role: discord.Role)
     await interaction.response.send_message(f"🛡️ Ticket staff set to **{role.name}**.", ephemeral=True)
 
 
-# ---- set_lucky_prize ----
+from discord import app_commands
+
+# ====== SET LUCKY PRIZE ======
 @bot.tree.command(
     name="set_lucky_prize",
     description="Set the prize text for lucky-number winners."
@@ -367,9 +369,11 @@ async def set_ticket_staff(interaction: discord.Interaction, role: discord.Role)
 @app_commands.guild_only()
 async def set_lucky_prize(interaction: discord.Interaction, prize: str):
     if not interaction.user.guild_permissions.manage_guild:
-        return await interaction.response.send_message(
+        await interaction.response.send_message(
             "You need **Manage Server** permission.", ephemeral=True
         )
+        return
+
     try:
         st = get_state(interaction.guild_id)
         st["lucky_prize"] = prize  # e.g. "2WL"
@@ -381,17 +385,8 @@ async def set_lucky_prize(interaction: discord.Interaction, prize: str):
             f"⚠️ Error: {type(e).__name__}: {e}", ephemeral=True
         )
 
-@bot.tree.command(
-    name="set_lucky_range",
-    description="Set min/max for random lucky number and optional prize."
-)
-@discord.app_commands.describe(
-    min_value="Smallest number the bot can arm as lucky",
-    max_value="Biggest number the bot can arm as lucky",
-    prize="Optional prize text, e.g. 2WL"
-)
 
-# ---- set_lucky_range ----
+# ====== SET LUCKY RANGE ======
 @bot.tree.command(
     name="set_lucky_range",
     description="Set min/max for random lucky number and optional prize."
@@ -401,17 +396,19 @@ async def set_lucky_range(
     interaction: discord.Interaction,
     min_value: int,
     max_value: int,
-    prize: str = None,   # "2WL" is ok
+    prize: str | None = None,   # "2WL" etc.
 ):
     if not interaction.user.guild_permissions.manage_guild:
-        return await interaction.response.send_message(
+        await interaction.response.send_message(
             "You need **Manage Server** permission.", ephemeral=True
         )
+        return
 
     if min_value >= max_value:
-        return await interaction.response.send_message(
+        await interaction.response.send_message(
             "Min must be **less** than max.", ephemeral=True
         )
+        return
 
     try:
         st = get_state(interaction.guild_id)
@@ -437,14 +434,7 @@ async def set_lucky_range(
         )
 
 
-# ---- set_milestone_range ----
-@bot.tree.command(
-    name="set_milestone_range",
-    description="Set min/max for random milestone."
-)
-
-
-# ---- set_milestone_range ----
+# ====== SET MILESTONE RANGE ======
 @bot.tree.command(
     name="set_milestone_range",
     description="Set min/max for random milestone."
@@ -456,13 +446,16 @@ async def set_milestone_range(
     max_value: int,
 ):
     if not interaction.user.guild_permissions.manage_guild:
-        return await interaction.response.send_message(
+        await interaction.response.send_message(
             "You need **Manage Server** permission.", ephemeral=True
         )
+        return
+
     if min_value >= max_value:
-        return await interaction.response.send_message(
+        await interaction.response.send_message(
             "Min must be **less** than max.", ephemeral=True
         )
+        return
 
     try:
         st = get_state(interaction.guild_id)
@@ -480,7 +473,6 @@ async def set_milestone_range(
         await interaction.response.send_message(
             f"⚠️ Error: {type(e).__name__}: {e}", ephemeral=True
         )
-
 
 # AI toggles (stored only)
 @bot.tree.command(name="aibanter_on", description="Enable AI banter in counting channel.")
