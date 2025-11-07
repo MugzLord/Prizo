@@ -910,34 +910,38 @@ async def on_message(message: discord.Message):
             mark_wrong(gid, message.author.id)
             key = (gid, message.channel.id, message.author.id)
             _wrong_streak[key] += 1
-            wrong_entries[gid] += 1
-            if wrong_entries[gid] >= 5:
-                wrong_entries[gid] = 0
-                reset_count(gid)
-                with contextlib.suppress(Exception):
-                    await message.channel.send("⚠️ Five wrong entries — counting has been reset to **1**. Keep it tidy, team.")
-                lp["user_id"] = None; lp["count"] = 0
-                return
-
+        
+            # instant reset on any wrong number
+            reset_count(gid)
+            wrong_entries[gid] = 0  # clear the old counter
+            lp["user_id"] = None
+            lp["count"] = 0
+        
+            with contextlib.suppress(Exception):
+                await message.channel.send(
+                    f"❌ Wrong number from {message.author.mention}. Count is back to **1**. Next is **1**."
+                )
+        
+            # still keep the “3 wrongs = bench” logic
             try:
                 ban_minutes = int(st["ban_minutes"])
             except Exception:
                 ban_minutes = 10
             if _wrong_streak[key] >= 3:
                 _wrong_streak[key] = 0
-                locks[message.author.id] = now + timedelta(minutes=ban_minutes)
+                locks[message.author.id] = datetime.utcnow() + timedelta(minutes=ban_minutes)
                 roast = pick_banter("roast") or "Have a sit-down and count sheep, not numbers. 🛋️"
                 with contextlib.suppress(Exception):
                     await safe_react(message, "⛔")
-                    await message.reply(f"🚫 {message.author.mention} three wrong on the trot — benched for **{ban_minutes} minutes**. {roast}")
-                lp["user_id"] = None; lp["count"] = 0
-                return
-
-            await safe_react(message, "❌")
-            banter = pick_banter("wrong") or "Oof—maths says ‘nah’. 📏"
-            with contextlib.suppress(Exception):
-                await message.reply(f"{banter} Next up is **{expected}**.")
+                    await message.reply(
+                        f"🚫 {message.author.mention} three wrong on the trot — benched for **{ban_minutes} minutes**. {roast}"
+                    )
+            else:
+                # optional little poke
+                await safe_react(message, "❌")
+        
             return
+
 
         # success
         bump_ok(gid, message.author.id)
