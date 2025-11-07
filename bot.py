@@ -264,14 +264,37 @@ async def on_ready():
     except Exception as e:
         print(f"[slash] global sync failed -> {e}")
 
-@bot.tree.command(name="set_ticket_category", description="Set the category where winner tickets will be created.")
-@app_commands.guild_only()
-async def set_ticket_category(interaction: discord.Interaction, category: discord.CategoryChannel):
+@bot.tree.command(
+    name="set_ticket_category",
+    description="Set the category where winner tickets will be created."
+)
+@discord.app_commands.guild_only()
+async def set_ticket_category(
+    interaction: discord.Interaction,
+    category: discord.CategoryChannel,
+):
+    # 1) permissions check
     if not interaction.user.guild_permissions.manage_guild:
-        return await interaction.response.send_message("You need **Manage Server** permission.", ephemeral=True)
-    set_ticket_cfg(interaction.guild_id, category_id=category.id)
-    await interaction.response.send_message(f"📂 Ticket category set to **{category.name}**.", ephemeral=True)
+        return await interaction.response.send_message(
+            "You need **Manage Server** permission.", ephemeral=True
+        )
 
+    try:
+        # 2) save it in memory
+        set_ticket_cfg(interaction.guild_id, category_id=category.id)
+
+        # 3) tell the user
+        await interaction.response.send_message(
+            f"📂 Ticket category set to **{category.name}**.",
+            ephemeral=True,
+        )
+
+    except Exception as e:
+        # if anything blows up, at least tell us
+        await interaction.response.send_message(
+            f"⚠️ I couldn’t save that: `{type(e).__name__}: {e}`",
+            ephemeral=True,
+        )
 
 @bot.tree.command(name="set_ticket_staff", description="(Optional) Set staff role that can see prize tickets.")
 @app_commands.guild_only()
@@ -427,6 +450,18 @@ async def cmd_tickets(ctx: commands.Context):
         lines.append(f"{name}: **{cnt}** ticket(s)")
     await ctx.reply("🎟️ Tickets so far:\n" + "\n".join(lines), mention_author=False)
 
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: Exception):
+    # this fires if ANY slash command errors
+    msg = f"⚠️ Slash command error: `{type(error).__name__}: {error}`"
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+    except Exception:
+        pass
+    print(msg)
 
 # -------------------------------------------------
 # counting handler
