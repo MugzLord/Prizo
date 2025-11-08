@@ -613,15 +613,13 @@ async def on_message(message: discord.Message):
         st["wrong_streak"][key] = st["wrong_streak"].get(key, 0) + 1
 
         # reset back to 1
+        # reset back to 1
         st["current_number"] = 0
         st["last_user_id"] = None
-        # re-arm lucky since count restarted
-        st["lucky_target"] = arm_new_lucky(st)
-
-
-        wrong_line = pick_banter("wrong", "Wrong number.")
+        st["lucky_target"] = arm_new_lucky(st)  # re-arm close to 1
         await message.channel.send(
-            f"❌ {wrong_line} {message.author.mention} Count is back to **1**."
+            f"❌ {wrong_line} {message.author.mention} Count is back to **1**.\n"
+            f"🎯 New lucky number armed in the next **{st['lucky_min']}–{st['lucky_max']}** counts."
         )
 
         if st["wrong_streak"][key] >= 3:
