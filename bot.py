@@ -290,7 +290,7 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
             f"🎟️ {claim_banter} (no ticket category set)"
         )
 
-    # re-arm new lucky
+    # re-arm new lucky (this was already right)
     st["lucky_target"] = random.randint(st["lucky_min"], st["lucky_max"])
     await channel.send("📌 New lucky number armed. Keep counting.")
 
@@ -327,24 +327,17 @@ async def set_ticket_category(
     interaction: discord.Interaction,
     category: discord.CategoryChannel,
 ):
-    # 1) permissions check
     if not interaction.user.guild_permissions.manage_guild:
         return await interaction.response.send_message(
             "You need **Manage Server** permission.", ephemeral=True
         )
-
     try:
-        # 2) save it in memory
         set_ticket_cfg(interaction.guild_id, category_id=category.id)
-
-        # 3) tell the user
         await interaction.response.send_message(
             f"📂 Ticket category set to **{category.name}**.",
             ephemeral=True,
         )
-
     except Exception as e:
-        # if anything blows up, at least tell us
         await interaction.response.send_message(
             f"⚠️ I couldn’t save that: `{type(e).__name__}: {e}`",
             ephemeral=True,
@@ -358,8 +351,6 @@ async def set_ticket_staff(interaction: discord.Interaction, role: discord.Role)
     set_ticket_cfg(interaction.guild_id, staff_role_id=role.id)
     await interaction.response.send_message(f"🛡️ Ticket staff set to **{role.name}**.", ephemeral=True)
 
-
-from discord import app_commands
 
 # ====== SET LUCKY PRIZE ======
 @bot.tree.command(
@@ -414,11 +405,12 @@ async def set_lucky_range(
         st = get_state(interaction.guild_id)
         st["lucky_min"] = int(min_value)
         st["lucky_max"] = int(max_value)
+
+        # ✅ re-arm immediately so it doesn't keep the old number
+        st["lucky_target"] = random.randint(st["lucky_min"], st["lucky_max"])
+
         if prize is not None:
             st["lucky_prize"] = prize
-
-        import random
-        st["lucky_target"] = random.randint(st["lucky_min"], st["lucky_max"])
 
         await interaction.response.send_message(
             (
@@ -462,7 +454,6 @@ async def set_milestone_range(
         st["milestone_min"] = int(min_value)
         st["milestone_max"] = int(max_value)
 
-        import random
         st["next_milestone"] = random.randint(st["milestone_min"], st["milestone_max"])
 
         await interaction.response.send_message(
@@ -537,7 +528,6 @@ async def cmd_tickets(ctx: commands.Context):
 
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: Exception):
-    # this fires if ANY slash command errors
     msg = f"⚠️ Slash command error: `{type(error).__name__}: {error}`"
     try:
         if interaction.response.is_done():
@@ -611,7 +601,6 @@ async def on_message(message: discord.Message):
             f"❌ {wrong_line} {message.author.mention} Count is back to **1**."
         )
 
-        # optional 3-wrong bench
         if st["wrong_streak"][key] >= 3:
             st["wrong_streak"][key] = 0
             ban_minutes = st["ban_minutes"]
@@ -621,7 +610,7 @@ async def on_message(message: discord.Message):
             await message.channel.send(
                 f"🚫 {message.author.mention} benched for **{ban_minutes} minutes**. {roast}"
             )
-        return  # <- important, stop here for wrong
+        return  # <- important
 
     # ----- SUCCESS -----
     st["current_number"] = expected
@@ -640,10 +629,10 @@ async def on_message(message: discord.Message):
             colour=discord.Colour.gold()
         )
         await message.channel.send(embed=em)
-        # re-arm next milestone
         st["next_milestone"] = random.randint(st["milestone_min"], st["milestone_max"])
 
     # lucky number → mini game
+    # ✅ this now matches the re-armed number from /set_lucky_range
     if expected == st.get("lucky_target"):
         with contextlib.suppress(Exception):
             await run_quick_math(message.channel, message.author, expected)
