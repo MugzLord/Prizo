@@ -194,6 +194,7 @@ async def create_winner_ticket(
 async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Member, number_hit: int):
     import random
 
+    # pick an operation
     ops = ["+", "-", "*", "/"]
     op = random.choice(ops)
 
@@ -228,6 +229,7 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
     )
     await channel.send(embed=em)
 
+    # wait for winner
     def check(m: discord.Message):
         if m.author.bot:
             return False
@@ -245,9 +247,10 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
         await channel.send("⏱️ No one solved it. Mini game over.")
         return
 
+    # ----- winner logic -----
     guild = channel.guild
     st = get_state(guild.id)
-    prize_text = st.get("lucky_prize", "Lucky number mini-game prize")  # ✅ define first
+    prize_text = st.get("lucky_prize", "Lucky number mini-game prize")  # ✅ define BEFORE ticket
 
     ticket_chan = None
     with contextlib.suppress(Exception):
@@ -286,7 +289,7 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
             f"🎟️ {claim_banter} (no ticket category set)"
         )
 
-    # re-arm close to current count
+    # ✅ re-arm AFTER everything, and keep it near the count
     st["lucky_target"] = arm_new_lucky(st)
     await channel.send("📌 New lucky number armed. Keep counting.")
 
