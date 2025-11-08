@@ -446,7 +446,7 @@ async def set_ticket_category(
     interaction: discord.Interaction,
     category: discord.CategoryChannel,
 ):
-    # 1) permission check
+    # make sure user can do it
     if not interaction.user.guild_permissions.manage_guild:
         await interaction.response.send_message(
             "You need **Manage Server** permission.", ephemeral=True
@@ -454,19 +454,16 @@ async def set_ticket_category(
         return
 
     try:
-        # 2) use interaction.guild.id (safer than guild_id here)
-        gid = interaction.guild.id
+        gid = interaction.guild.id  # safer than guild_id
         set_ticket_cfg(gid, category_id=category.id)
 
-        # 3) reply
         await interaction.response.send_message(
             f"📂 Ticket category set to **{category.name}**.",
             ephemeral=True,
         )
 
     except Exception as e:
-        # if anything went wrong, tell the user so Discord doesn't show
-        # "The application did not respond"
+        # make absolutely sure we respond so Discord doesn't show the red error
         if interaction.response.is_done():
             await interaction.followup.send(
                 f"⚠️ I couldn’t save that: `{type(e).__name__}: {e}`",
