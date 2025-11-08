@@ -250,7 +250,7 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
         answer = random.randint(2, 12)
         b = random.randint(2, 12)
         a = answer * b
-        display = f"{a} ÷ {b}"
+        display = f"{a} / {b}"
 
     em = discord.Embed(
         title="🧠 Lucky Number Mini Game!",
