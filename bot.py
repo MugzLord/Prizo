@@ -772,7 +772,7 @@ async def on_message(message: discord.Message):
         st["current_number"] = 0
         st["last_user_id"] = None
         st["lucky_target"] = arm_new_lucky(st)  # re-arm close to 1
-        wrong_line = pick_banter("wrong", "Wrong number.")
+       
         wrong_line = pick_banter("wrong", "Wrong number.")
         await message.channel.send(
             f"❌ {wrong_line} {message.author.mention} Count is back to **1**."
