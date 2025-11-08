@@ -327,21 +327,37 @@ async def set_ticket_category(
     interaction: discord.Interaction,
     category: discord.CategoryChannel,
 ):
+    # 1) permission check
     if not interaction.user.guild_permissions.manage_guild:
-        return await interaction.response.send_message(
+        await interaction.response.send_message(
             "You need **Manage Server** permission.", ephemeral=True
         )
+        return
+
     try:
-        set_ticket_cfg(interaction.guild_id, category_id=category.id)
+        # 2) use interaction.guild.id (safer than guild_id here)
+        gid = interaction.guild.id
+        set_ticket_cfg(gid, category_id=category.id)
+
+        # 3) reply
         await interaction.response.send_message(
             f"📂 Ticket category set to **{category.name}**.",
             ephemeral=True,
         )
+
     except Exception as e:
-        await interaction.response.send_message(
-            f"⚠️ I couldn’t save that: `{type(e).__name__}: {e}`",
-            ephemeral=True,
-        )
+        # if anything went wrong, tell the user so Discord doesn't show
+        # "The application did not respond"
+        if interaction.response.is_done():
+            await interaction.followup.send(
+                f"⚠️ I couldn’t save that: `{type(e).__name__}: {e}`",
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                f"⚠️ I couldn’t save that: `{type(e).__name__}: {e}`",
+                ephemeral=True,
+            )
 
 @bot.tree.command(name="set_ticket_staff", description="(Optional) Set staff role that can see prize tickets.")
 @app_commands.guild_only()
