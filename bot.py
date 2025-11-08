@@ -410,7 +410,7 @@ async def set_lucky_range(
     interaction: discord.Interaction,
     min_value: int,
     max_value: int,
-    prize: str | None = None,   # "2WL" etc.
+    prize: str | None = None,
 ):
     if not interaction.user.guild_permissions.manage_guild:
         await interaction.response.send_message(
@@ -425,13 +425,15 @@ async def set_lucky_range(
         return
 
     try:
+        # ✅ get state FIRST
+        st = get_state(interaction.guild.id)
+
+        # update range
         st["lucky_min"] = int(min_value)
         st["lucky_max"] = int(max_value)
+
+        # ✅ now we can arm relative to current count
         st["lucky_target"] = arm_new_lucky(st)
-
-
-        # ✅ re-arm immediately so it doesn't keep the old number
-        st["lucky_target"] = random.randint(st["lucky_min"], st["lucky_max"])
 
         if prize is not None:
             st["lucky_prize"] = prize
