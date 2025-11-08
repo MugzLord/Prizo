@@ -325,8 +325,7 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
             f"🎟 {claim_banter}"
         )
 
-
-    # re-arm close to current count
+    # ✅ re-arm relative to the current count, so it never "stops"
     st["lucky_target"] = arm_new_lucky(st)
     await channel.send("📌 New lucky number armed. Keep counting.")
        
@@ -347,9 +346,8 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
             colour=discord.Colour.orange(),
         )
         await channel.send(embed=em_lb)
-    
-    # then continue your code (like arming the next lucky number)
-    st["lucky_target"] = random.randint(st["lucky_min"], st["lucky_max"])
+
+    # ❌ DO NOT put another `st["lucky_target"] = random.randint(...)` here
 
 # -------------------------------------------------
 # slash commands
@@ -775,10 +773,12 @@ async def on_message(message: discord.Message):
         st["current_number"] = 0
         st["last_user_id"] = None
         st["lucky_target"] = arm_new_lucky(st)  # re-arm close to 1
+        wrong_line = pick_banter("wrong", "Wrong number.")
         await message.channel.send(
             f"❌ {wrong_line} {message.author.mention} Count is back to **1**.\n"
             f"🎯 New lucky number armed in the next **{st['lucky_min']}–{st['lucky_max']}** counts."
         )
+
 
         if st["wrong_streak"][key] >= 3:
             st["wrong_streak"][key] = 0
