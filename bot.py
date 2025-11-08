@@ -192,14 +192,11 @@ async def create_winner_ticket(
 # mini-game: quick math (random ops)
 # -------------------------------------------------
 async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Member, number_hit: int):
-    """First correct answer wins ticket + ticket channel."""
     import random
 
-    # pick an operation
     ops = ["+", "-", "*", "/"]
     op = random.choice(ops)
 
-    # generate numbers sensibly per op
     if op == "+":
         a = random.randint(2, 15)
         b = random.randint(2, 15)
@@ -248,11 +245,10 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
         await channel.send("⏱️ No one solved it. Mini game over.")
         return
 
-    # winner logic
     guild = channel.guild
     st = get_state(guild.id)
-    prize_text = st.get("lucky_prize", "Lucky number mini-game prize")  # define first ✅
-    
+    prize_text = st.get("lucky_prize", "Lucky number mini-game prize")  # ✅ define first
+
     ticket_chan = None
     with contextlib.suppress(Exception):
         ticket_chan = await create_winner_ticket(
@@ -261,7 +257,6 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
             prize=prize_text,
             n_hit=number_hit,
         )
-
 
     winner_banter = pick_banter("winner", "We have a winner!")
     claim_banter = pick_banter("claim", "Open your ticket to claim.")
@@ -275,7 +270,6 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
                 url=ticket_chan.jump_url,
             )
         )
-
         result_embed = discord.Embed(
             title="🏆 Lucky Mini-Game Winner",
             description=(
@@ -292,7 +286,7 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
             f"🎟️ {claim_banter} (no ticket category set)"
         )
 
-    # ✅ re-arm new lucky, relative to current count (once)
+    # re-arm close to current count
     st["lucky_target"] = arm_new_lucky(st)
     await channel.send("📌 New lucky number armed. Keep counting.")
 
