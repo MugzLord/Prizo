@@ -154,19 +154,25 @@ async def create_winner_ticket(
         winner: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
         guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_channels=True),
     }
-
     if staff_role:
         overwrites[staff_role] = discord.PermissionOverwrite(
             view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
         )
 
     name = f"ticket-{winner.name.lower()}-{n_hit}"
-    chan = await guild.create_text_channel(
-        name=name,
-        category=category,
-        overwrites=overwrites,
-        reason="Prizo prize ticket",
-    )
+
+    # 👉 this is the part that was throwing 403
+    try:
+        chan = await guild.create_text_channel(
+            name=name,
+            category=category,
+            overwrites=overwrites,
+            reason="Prizo prize ticket",
+        )
+    except discord.Forbidden:
+        # can't create channel – just return None, mini-game will send fallback text
+        return None
+
     with contextlib.suppress(Exception):
         await chan.edit(sync_permissions=False)
 
@@ -186,7 +192,6 @@ async def create_winner_ticket(
     em.set_footer(text=f"{guild.name} • Ticket")
     await chan.send(embed=em)
     return chan
-
 
 # -------------------------------------------------
 # mini-game: quick math (random ops)
