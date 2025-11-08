@@ -149,19 +149,32 @@ async def create_winner_ticket(
         with contextlib.suppress(Exception):
             winner = await guild.fetch_member(winner.id)
 
+    # make sure bot + winner can talk
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
-        winner: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
-        guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True, manage_channels=True),
+        winner: discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            read_message_history=True
+        ),
+        guild.me: discord.PermissionOverwrite(
+            view_channel=True,
+            send_messages=True,
+            read_message_history=True,
+            manage_channels=True,
+            embed_links=True
+        ),
     }
     if staff_role:
         overwrites[staff_role] = discord.PermissionOverwrite(
-            view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
+            view_channel=True,
+            send_messages=True,
+            read_message_history=True,
+            manage_messages=True,
         )
 
     name = f"ticket-{winner.name.lower()}-{n_hit}"
 
-    # 👉 this is the part that was throwing 403
     try:
         chan = await guild.create_text_channel(
             name=name,
@@ -170,12 +183,14 @@ async def create_winner_ticket(
             reason="Prizo prize ticket",
         )
     except discord.Forbidden:
-        # can't create channel – just return None, mini-game will send fallback text
+        # no perms to create channel
         return None
 
+    # (optional) don’t sync perms from parent if parent blocks us
     with contextlib.suppress(Exception):
         await chan.edit(sync_permissions=False)
 
+    # now try to send the embed
     claim_text = pick_banter("claim", "Please provide your IMVU link and prize details.")
     em = discord.Embed(
         title="🎟️ Prize Ticket",
@@ -190,7 +205,16 @@ async def create_winner_ticket(
         colour=discord.Colour.green()
     )
     em.set_footer(text=f"{guild.name} • Ticket")
-    await chan.send(embed=em)
+
+    try:
+        await chan.send(embed=em)
+    except discord.Forbidden:
+        # at least drop a plain message
+        with contextlib.suppress(Exception):
+            await chan.send(
+                f"{winner.mention} ticket created.\nPrize: {prize}\nLucky number: {n_hit}\n{claim_text}"
+            )
+
     return chan
 
 # -------------------------------------------------
