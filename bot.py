@@ -23,7 +23,6 @@ intents.guilds = True
 intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
-
 # -------------------------------------------------
 # load banter.json
 # -------------------------------------------------
