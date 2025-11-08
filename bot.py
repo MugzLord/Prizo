@@ -251,8 +251,8 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
     # winner logic
     guild = channel.guild
     st = get_state(guild.id)
-    prize_text = st.get("lucky_prize", "Lucky number mini-game prize")
-
+    prize_text = st.get("lucky_prize", "Lucky number mini-game prize")  # define first ✅
+    
     ticket_chan = None
     with contextlib.suppress(Exception):
         ticket_chan = await create_winner_ticket(
@@ -261,6 +261,7 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
             prize=prize_text,
             n_hit=number_hit,
         )
+
 
     winner_banter = pick_banter("winner", "We have a winner!")
     claim_banter = pick_banter("claim", "Open your ticket to claim.")
