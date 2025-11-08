@@ -194,7 +194,6 @@ async def create_winner_ticket(
 async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Member, number_hit: int):
     import random
 
-    # pick an operation
     ops = ["+", "-", "*", "/"]
     op = random.choice(ops)
 
@@ -219,6 +218,7 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
         a = answer * b
         display = f"{a} ÷ {b}"
 
+    # announce mini game
     em = discord.Embed(
         title="🧠 Lucky Number Mini Game!",
         description=(
@@ -229,7 +229,7 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
     )
     await channel.send(embed=em)
 
-    # wait for winner
+    # wait for the first correct answer
     def check(m: discord.Message):
         if m.author.bot:
             return False
@@ -247,10 +247,9 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
         await channel.send("⏱️ No one solved it. Mini game over.")
         return
 
-    # ----- winner logic -----
     guild = channel.guild
     st = get_state(guild.id)
-    prize_text = st.get("lucky_prize", "Lucky number mini-game prize")  # ✅ define BEFORE ticket
+    prize_text = st.get("lucky_prize", "Lucky number mini-game prize")  # define BEFORE ticket
 
     ticket_chan = None
     with contextlib.suppress(Exception):
@@ -289,9 +288,10 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
             f"🎟️ {claim_banter} (no ticket category set)"
         )
 
-    # ✅ re-arm AFTER everything, and keep it near the count
+    # re-arm close to where we are now
     st["lucky_target"] = arm_new_lucky(st)
     await channel.send("📌 New lucky number armed. Keep counting.")
+
 
 # -------------------------------------------------
 # slash commands
@@ -652,6 +652,8 @@ async def on_message(message: discord.Message):
     # lucky number → mini game
     # ✅ this now matches the re-armed number from /set_lucky_range
     if expected == st.get("lucky_target"):
+        # tell the channel we hit it (helps debugging)
+        await message.channel.send(f"🎯 Lucky number **{expected}** hit by {message.author.mention}! Mini-game starting...")
         with contextlib.suppress(Exception):
             await run_quick_math(message.channel, message.author, expected)
 
