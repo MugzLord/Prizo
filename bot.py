@@ -206,7 +206,6 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
         answer = a + b
         display = f"{a} + {b}"
     elif op == "-":
-        # make sure it's not negative
         a = random.randint(5, 20)
         b = random.randint(1, a)
         answer = a - b
@@ -217,7 +216,6 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
         answer = a * b
         display = f"{a} × {b}"
     else:  # "/"
-        # make a clean division: pick answer first
         answer = random.randint(2, 12)
         b = random.randint(2, 12)
         a = answer * b
@@ -233,7 +231,6 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
     )
     await channel.send(embed=em)
 
-    # who answers first?
     def check(m: discord.Message):
         if m.author.bot:
             return False
@@ -254,11 +251,8 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
     # winner logic
     guild = channel.guild
     st = get_state(guild.id)
-    # re-arm new lucky, relative to current count
-    st["lucky_target"] = arm_new_lucky(st)
-    await channel.send("📌 New lucky number armed. Keep counting.")
+    prize_text = st.get("lucky_prize", "Lucky number mini-game prize")
 
-    # try to create the ticket channel
     ticket_chan = None
     with contextlib.suppress(Exception):
         ticket_chan = await create_winner_ticket(
@@ -297,10 +291,9 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
             f"🎟️ {claim_banter} (no ticket category set)"
         )
 
-    # re-arm new lucky (this was already right)
-    st["lucky_target"] = random.randint(st["lucky_min"], st["lucky_max"])
+    # ✅ re-arm new lucky, relative to current count (once)
+    st["lucky_target"] = arm_new_lucky(st)
     await channel.send("📌 New lucky number armed. Keep counting.")
-
 
 # -------------------------------------------------
 # slash commands
