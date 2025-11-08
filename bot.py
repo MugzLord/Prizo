@@ -615,6 +615,9 @@ async def on_message(message: discord.Message):
         # reset back to 1
         st["current_number"] = 0
         st["last_user_id"] = None
+        # re-arm lucky since count restarted
+        st["lucky_target"] = arm_new_lucky(st)
+
 
         wrong_line = pick_banter("wrong", "Wrong number.")
         await message.channel.send(
