@@ -273,7 +273,6 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
         except ValueError:
             return False
         return val == answer
-
     
     try:
         winner_msg = await bot.wait_for("message", timeout=15.0, check=check)
@@ -329,6 +328,29 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
     # re-arm close to current count
     st["lucky_target"] = arm_new_lucky(st)
     await channel.send("📌 New lucky number armed. Keep counting.")
+       
+    # ---- TOURNAMENT COUNTER ----
+    if st.get("tourney_mode"):
+        st["tourney_rounds"] = st.get("tourney_rounds", 0) + 1
+        uid = winner_msg.author.id
+        wins_map = st.get("tourney_wins") or {}
+        wins_map[uid] = wins_map.get(uid, 0) + 1
+        st["tourney_wins"] = wins_map
+    
+        board = sorted(wins_map.items(), key=lambda x: x[1], reverse=True)
+        top_lines = [f"**{i+1}.** <@{u}> — {c} win(s)" for i, (u, c) in enumerate(board[:5])]
+    
+        em_lb = discord.Embed(
+            title="🏅 Tournament Leaderboard (Live)",
+            description="\n".join(top_lines),
+            colour=discord.Colour.orange(),
+        )
+        await channel.send(embed=em_lb)
+    
+    # then continue your code (like arming the next lucky number)
+    st["lucky_target"] = random.randint(st["lucky_min"], st["lucky_max"])
+
+
 
 # -------------------------------------------------
 # slash commands
