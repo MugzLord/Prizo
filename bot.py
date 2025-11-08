@@ -85,7 +85,7 @@ def get_state(gid: int) -> Dict[str, Any]:
             "current_number": 0,
             "last_user_id": None,
             "words_only": False,
-            "ban_minutes": 5,
+            "ban_minutes": 1,
             "wrong_streak": {},       # (channel_id, user_id) -> int
             "locks": {},              # user_id -> datetime
             "tickets": [],            # user IDs who won mini-games
