@@ -37,6 +37,11 @@ if os.path.exists("banter.json"):
         print(f"[banter] failed to load: {e}")
 
 
+def arm_new_lucky(st: Dict[str, Any]) -> int:
+    # pick a lucky number within N steps from the current count
+    return st["current_number"] + random.randint(st["lucky_min"], st["lucky_max"])
+
+
 def pick_banter(key: str, default: str = "") -> str:
     arr = BANTER.get(key) or []
     if not arr:
@@ -100,7 +105,8 @@ def get_state(gid: int) -> Dict[str, Any]:
 
     # ensure targets exist
     if st.get("lucky_target") is None:
-        st["lucky_target"] = random.randint(st["lucky_min"], st["lucky_max"])
+        st["lucky_target"] = arm_new_lucky(st)
+
     if st.get("next_milestone") is None:
         st["next_milestone"] = random.randint(st["milestone_min"], st["milestone_max"])
 
@@ -248,8 +254,9 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
     # winner logic
     guild = channel.guild
     st = get_state(guild.id)
-    st["tickets"].append(winner_msg.author.id)
-    prize_text = st.get("lucky_prize", "Lucky number mini-game prize")
+    # re-arm new lucky, relative to current count
+    st["lucky_target"] = arm_new_lucky(st)
+    await channel.send("📌 New lucky number armed. Keep counting.")
 
     # try to create the ticket channel
     ticket_chan = None
@@ -418,9 +425,10 @@ async def set_lucky_range(
         return
 
     try:
-        st = get_state(interaction.guild_id)
         st["lucky_min"] = int(min_value)
         st["lucky_max"] = int(max_value)
+        st["lucky_target"] = arm_new_lucky(st)
+
 
         # ✅ re-arm immediately so it doesn't keep the old number
         st["lucky_target"] = random.randint(st["lucky_min"], st["lucky_max"])
