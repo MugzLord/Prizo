@@ -85,10 +85,10 @@ def get_state(gid: int) -> Dict[str, Any]:
             "current_number": 0,
             "last_user_id": None,
             "words_only": False,
-            "ban_minutes": 1,
-            "wrong_streak": {},       # (channel_id, user_id) -> int
-            "locks": {},              # user_id -> datetime
-            "tickets": [],            # user IDs who won mini-games
+            "ban_minutes": 5,
+            "wrong_streak": {},
+            "locks": {},
+            "tickets": [],
             "lucky_prize": "Lucky number mini-game prize",
 
             # dynamic lucky
@@ -100,17 +100,23 @@ def get_state(gid: int) -> Dict[str, Any]:
             "milestone_min": 20,
             "milestone_max": 150,
             "next_milestone": None,
+
+            # 🏁 tourney
+            "tourney_mode": False,
+            "tourney_wins": {},      # user_id -> wins
+            "tourney_rounds": 0,     # how many mini-games have happened
+            "tourney_trigger": 5,    # not required now, but handy if you want "every 5"
         }
     st = GUILDS[gid]
 
     # ensure targets exist
     if st.get("lucky_target") is None:
         st["lucky_target"] = arm_new_lucky(st)
-
     if st.get("next_milestone") is None:
         st["next_milestone"] = random.randint(st["milestone_min"], st["milestone_max"])
 
     return st
+
 
 
 def get_ticket_cfg(gid: int) -> Tuple[Optional[int], Optional[int]]:
@@ -327,6 +333,90 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
 # -------------------------------------------------
 # slash commands
 # -------------------------------------------------
+@bot.tree.command(name="start_tourney", description="Start a Prizo tournament. Mini-game wins will be counted.")
+@app_commands.guild_only()
+async def start_tourney(
+    interaction: discord.Interaction,
+    trigger_every: int = 5  # reserved if you later want automatic triggers
+):
+    st = get_state(interaction.guild.id)
+    st["tourney_mode"] = True
+    st["tourney_wins"] = {}
+    st["tourney_rounds"] = 0
+    st["tourney_trigger"] = max(1, int(trigger_every))
+    await interaction.response.send_message(
+        f"🏁 Tournament Mode **enabled**!\nWins from lucky mini-games will be counted.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="show_tourney", description="Show the current tournament leaderboard.")
+@app_commands.guild_only()
+async def show_tourney(interaction: discord.Interaction):
+    st = get_state(interaction.guild.id)
+    wins = st.get("tourney_wins", {})
+    if not st.get("tourney_mode"):
+        await interaction.response.send_message("❌ Tournament mode is not enabled.", ephemeral=True)
+        return
+    if not wins:
+        await interaction.response.send_message("📋 Tournament is running but nobody has won yet.", ephemeral=True)
+        return
+
+    leaderboard = sorted(wins.items(), key=lambda x: x[1], reverse=True)
+    lines = []
+    for i, (uid, cnt) in enumerate(leaderboard, 1):
+        lines.append(f"**{i}.** <@{uid}> — {cnt} win(s)")
+
+    em = discord.Embed(
+        title="🏅 Current Tournament Leaderboard",
+        description="\n".join(lines),
+        colour=discord.Colour.orange(),
+    )
+    await interaction.response.send_message(embed=em)
+
+
+@bot.tree.command(name="end_tourney", description="End the Prizo tournament and show final prizes.")
+@app_commands.guild_only()
+async def end_tourney(interaction: discord.Interaction):
+    st = get_state(interaction.guild.id)
+    if not st.get("tourney_mode"):
+        await interaction.response.send_message("❌ No tournament running.", ephemeral=True)
+        return
+
+    st["tourney_mode"] = False
+    wins = st.get("tourney_wins", {})
+    st["tourney_wins"] = {}
+    st["tourney_rounds"] = 0
+
+    if not wins:
+        await interaction.response.send_message("🏁 Tournament ended — no wins recorded.")
+        return
+
+    base_prize = st.get("lucky_prize", "1WL")
+
+    # helper inside to multiply prize like 2WL * wins
+    def multiply_prize(prize_text: str, wins: int) -> str:
+        m = re.match(r"(\d+)\s*(.*)", prize_text.strip())
+        if not m:
+            return prize_text
+        base = int(m.group(1))
+        tail = m.group(2)
+        total = base * wins
+        return f"{total}{tail}"
+
+    leaderboard = sorted(wins.items(), key=lambda x: x[1], reverse=True)
+    lines = []
+    for i, (uid, cnt) in enumerate(leaderboard, 1):
+        final_prize = multiply_prize(base_prize, cnt)
+        lines.append(f"**{i}.** <@{uid}> — {cnt} win(s) → **{final_prize}**")
+
+    em = discord.Embed(
+        title="🏆 Prizo Tournament Results",
+        description="\n".join(lines),
+        colour=discord.Colour.gold(),
+    )
+    await interaction.response.send_message(embed=em)
+
 @bot.event
 async def on_ready():
     print(f"[boot] logged in as {bot.user} ({bot.user.id})")
@@ -420,6 +510,28 @@ async def set_lucky_prize(interaction: discord.Interaction, prize: str):
         await interaction.response.send_message(
             f"⚠️ Error: {type(e).__name__}: {e}", ephemeral=True
         )
+
+        # ---- TOURNAMENT COUNTER ----
+    if st.get("tourney_mode"):
+        st["tourney_rounds"] = st.get("tourney_rounds", 0) + 1
+        uid = winner_msg.author.id
+        wins_map = st.get("tourney_wins") or {}
+        wins_map[uid] = wins_map.get(uid, 0) + 1
+        st["tourney_wins"] = wins_map
+
+        # post live leaderboard (top 5)
+        board = sorted(wins_map.items(), key=lambda x: x[1], reverse=True)
+        top_lines = []
+        for i, (tu, tc) in enumerate(board[:5], 1):
+            top_lines.append(f"**{i}.** <@{tu}> — {tc} win(s)")
+        if top_lines:
+            em_lb = discord.Embed(
+                title="🏅 Tournament Leaderboard (Live)",
+                description="\n".join(top_lines),
+                colour=discord.Colour.orange(),
+            )
+            await channel.send(embed=em_lb)
+
 
 
 # ====== SET LUCKY RANGE ======
