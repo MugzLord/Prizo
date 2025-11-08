@@ -779,7 +779,6 @@ async def on_message(message: discord.Message):
             f"🎯 New lucky number armed in the next **{st['lucky_min']}–{st['lucky_max']}** counts."
         )
 
-
         if st["wrong_streak"][key] >= 3:
             st["wrong_streak"][key] = 0
             ban_minutes = st["ban_minutes"]
