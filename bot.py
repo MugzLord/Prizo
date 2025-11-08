@@ -350,8 +350,6 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
     # then continue your code (like arming the next lucky number)
     st["lucky_target"] = random.randint(st["lucky_min"], st["lucky_max"])
 
-
-
 # -------------------------------------------------
 # slash commands
 # -------------------------------------------------
