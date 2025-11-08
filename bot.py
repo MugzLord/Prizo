@@ -244,10 +244,15 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
             return False
         return val == answer
 
+    
     try:
         winner_msg = await bot.wait_for("message", timeout=15.0, check=check)
     except asyncio.TimeoutError:
-        await channel.send("⏱️ No one solved it. Mini game over.")
+        # re-arm even if nobody solved it
+        guild = channel.guild
+        st = get_state(guild.id)
+        st["lucky_target"] = arm_new_lucky(st)
+        await channel.send("⏱️ No one solved it. Mini game over.\n📌 New lucky number armed. Keep counting.")
         return
 
     guild = channel.guild
