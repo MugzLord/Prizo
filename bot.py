@@ -658,4 +658,8 @@ async def on_message(message: discord.Message):
         with contextlib.suppress(Exception):
             await run_quick_math(message.channel, message.author, expected)
 
-bot.run(TOKEN)
+if __name__ == "__main__":
+    try:
+        bot.run(TOKEN)
+    except Exception as e:
+        print("BOT FAILED TO START:", e)
