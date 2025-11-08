@@ -322,7 +322,7 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
     else:
         await channel.send(
             f"🏆 {winner_msg.author.mention} {winner_banter} **{display} = {answer}**\n"
-            f"🎟️ {claim_banter} (no ticket category set)"
+            #f"🎟️ {claim_banter} (no ticket category set)"
         )
 
     # re-arm close to current count
