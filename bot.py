@@ -218,7 +218,6 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
         a = answer * b
         display = f"{a} ÷ {b}"
 
-    # announce mini game
     em = discord.Embed(
         title="🧠 Lucky Number Mini Game!",
         description=(
@@ -229,7 +228,6 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
     )
     await channel.send(embed=em)
 
-    # wait for the first correct answer
     def check(m: discord.Message):
         if m.author.bot:
             return False
@@ -249,7 +247,7 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
 
     guild = channel.guild
     st = get_state(guild.id)
-    prize_text = st.get("lucky_prize", "Lucky number mini-game prize")  # define BEFORE ticket
+    prize_text = st.get("lucky_prize", "Lucky number mini-game prize")
 
     ticket_chan = None
     with contextlib.suppress(Exception):
@@ -288,10 +286,9 @@ async def run_quick_math(channel: discord.TextChannel, trigger_user: discord.Mem
             f"🎟️ {claim_banter} (no ticket category set)"
         )
 
-    # re-arm close to where we are now
+    # re-arm close to current count
     st["lucky_target"] = arm_new_lucky(st)
     await channel.send("📌 New lucky number armed. Keep counting.")
-
 
 # -------------------------------------------------
 # slash commands
@@ -650,12 +647,15 @@ async def on_message(message: discord.Message):
         st["next_milestone"] = random.randint(st["milestone_min"], st["milestone_max"])
 
     # lucky number → mini game
-    # ✅ this now matches the re-armed number from /set_lucky_range
     if expected == st.get("lucky_target"):
-        # tell the channel we hit it (helps debugging)
-        await message.channel.send(f"🎯 Lucky number **{expected}** hit by {message.author.mention}! Mini-game starting...")
-        with contextlib.suppress(Exception):
+        await message.channel.send(
+            f"🎯 Lucky number **{expected}** hit by {message.author.mention}! Mini-game starting..."
+        )
+        try:
             await run_quick_math(message.channel, message.author, expected)
+        except Exception as e:
+            # show the real problem instead of hiding it
+            await message.channel.send(f"⚠️ Mini-game error: `{type(e).__name__}: {e}`")
 
 if __name__ == "__main__":
     try:
